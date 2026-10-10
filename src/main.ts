@@ -90,6 +90,8 @@ async function load(
     )
       history.replaceState(null, "", location.pathname + location.search);
     ui.filename.textContent = file.name;
+    const format = document.querySelector("footer span");
+    if (format) format.textContent = `Format v${report.version}`;
     ui.summary.hidden = false;
     ui.welcome.hidden = true;
     ui.status.textContent = "Report loaded.";

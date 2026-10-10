@@ -7,6 +7,148 @@ import { gunzipSync, gzipSync } from "node:zlib";
 
 const fixture = "tests/fixtures/quark-v1.qpulse";
 
+test("v2 network evidence is inspectable, session-filtered and shareable", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles("tests/fixtures/network-v2.qpulse");
+  await page.locator('.nav-item[data-view="Network"]').click();
+  await expect(page.locator("footer")).toHaveText("Format v2Source");
+  await expect(page.locator(".metric").filter({ hasText: "Recorded packets" })).toContainText(
+    "437",
+  );
+  await expect(page.locator(".metric").filter({ hasText: "Recorded events" })).toContainText("4");
+  await expect(page.locator(".metric").filter({ hasText: "Decoding failures" })).toContainText(
+    "14",
+  );
+  await expect(page.locator(".network-events tbody tr")).toHaveCount(4);
+  await expect(page.locator(".network-events tbody tr").nth(1)).toContainText("-1");
+  await expect(page.locator(".tick-detail")).toContainText("partial");
+  await page.locator('[data-network-bucket="3"]').click();
+  await expect(page.locator(".tick-detail")).toContainText("324 packets");
+  await page.mouse.move(0, 0);
+  await expect(page.locator(".tick-detail")).toContainText("324 packets");
+  await page.getByRole("slider", { name: "Select activity bucket" }).focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.locator(".tick-detail")).toContainText("18 packets");
+  await expect(page.getByRole("slider", { name: "Select activity bucket" })).toBeFocused();
+  await page.getByLabel("Session", { exact: true }).selectOption("2");
+  await expect(page.locator(".metric").filter({ hasText: "Recorded packets" })).toContainText("8");
+  await expect(page.locator(".network-events tbody tr")).toHaveCount(3);
+  await expect(page.locator(".network-toolbar")).toContainText("Protocol 1000, closed");
+  await page.getByLabel("Session", { exact: true }).selectOption("unknown");
+  await expect(page.locator("#view-content")).toContainText("No activity windows were retained");
+  await page.getByLabel("Session", { exact: true }).selectOption("all");
+  await page.getByText("How to read this evidence", { exact: true }).click();
+  await expect(page.locator(".network-notes")).toContainText(
+    "a rejection and a separate disconnect",
+  );
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: "test-results/network-desktop.png", fullPage: true });
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Copy link" })).toBeEnabled();
+  const link = await page.getByLabel("Share link", { exact: true }).inputValue();
+  await page.goto("about:blank");
+  await page.goto(link);
+  await page.locator('.nav-item[data-view="Network"]').click();
+  await expect(page.locator(".network-events tbody tr")).toHaveCount(4);
+  await page.locator("#report-file").setInputFiles(fixture);
+  await page.locator('.nav-item[data-view="Network"]').click();
+  await expect(page.locator("#view-content")).toContainText(
+    "Network telemetry is unavailable in Pulse v1",
+  );
+  await expect(page.locator("footer")).toHaveText("Format v1Source");
+});
+
+test.describe("Touch network", () => {
+  test.use({ hasTouch: true });
+  test("network telemetry losses stay visible and decision tables stay bounded on mobile", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 900 });
+    const raw = JSON.parse(
+      gunzipSync(readFileSync("tests/fixtures/network-v2.qpulse")).toString("utf8"),
+    );
+    const network = raw.threads[0].network;
+    network.events = Array.from({ length: 150 }, () => [...network.events[0]]);
+    network.events_dropped = 5;
+    network.windows_dropped = 7;
+    network.sessions_dropped = 2;
+    network.counter_overflows = 1;
+    await page.goto("/");
+    await page.locator("#report-file").setInputFiles({
+      name: "losses.qpulse",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(raw)),
+    });
+    await page.locator('.nav-item[data-view="Network"]').click();
+    await expect(page.locator("#view-content .notice")).toContainText("Telemetry is incomplete");
+    await expect(page.locator(".metric").filter({ hasText: "Recorded packets" })).toContainText(
+      "≥ 437",
+    );
+    await page.locator('.traffic-bar[data-network-bucket="3"]').tap();
+    await expect(page.locator(".tick-detail")).toContainText("324 packets");
+    await page.mouse.move(0, 0);
+    await expect(page.locator(".tick-detail")).toContainText("324 packets");
+    await expect(page.locator(".network-events tbody tr")).toHaveCount(75);
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    await expect(page.locator(".pagination")).toContainText("76–150 of 150");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    expect(
+      await page.locator(".sidebar nav").evaluate((nav) => nav.scrollWidth <= nav.clientWidth),
+    ).toBe(true);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: "test-results/network-mobile.png" });
+  });
+});
+
+test("large network captures bound charts and reset activity selection on thread change", async ({
+  page,
+}) => {
+  const raw = JSON.parse(
+    gunzipSync(readFileSync("tests/fixtures/network-v2.qpulse")).toString("utf8"),
+  );
+  const thread = raw.threads[0];
+  const length = 4_095_750_000_000;
+  thread.ended_ns = thread.started_ns + length;
+  thread.network.coverage.to_ns = length;
+  thread.network.windows = Array.from({ length: 4096 }, (_, index) => [
+    index * 1_000_000_000,
+    1,
+    1,
+    index === 3072 ? 900 : 10,
+    40,
+    80,
+    10,
+    0,
+    0,
+    0,
+    0,
+  ]);
+  raw.threads.push({
+    ...thread,
+    thread: "empty-network",
+    network: { ...thread.network, sessions: [], events: [], windows: [] },
+  });
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles({
+    name: "large-network.qpulse",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(raw)),
+  });
+  await page.locator('.nav-item[data-view="Network"]').click();
+  expect(await page.locator(".traffic-bar").count()).toBeLessThanOrEqual(240);
+  await expect(page.locator('.traffic-bar[data-network-bucket="3072"]')).toHaveCount(1);
+  await page.locator('.traffic-bar[data-network-bucket="3072"]').click();
+  await expect(page.locator(".tick-detail")).toContainText("900 packets");
+  await page.getByRole("combobox", { name: "Thread", exact: true }).selectOption("1");
+  await expect(page.locator(".traffic-bar")).toHaveCount(0);
+  await expect(page.locator("#view-content")).toContainText("No activity windows were retained");
+  await page.getByRole("combobox", { name: "Thread", exact: true }).selectOption("0");
+  await expect(page.getByLabel("Session", { exact: true })).toHaveValue("all");
+  await expect(page.getByRole("slider", { name: "Select activity bucket" })).toHaveValue("4095");
+});
+
 test("share dialog copies a capture that reopens without uploading", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", {
@@ -448,7 +590,7 @@ test("sample capture and every analysis view remain usable on mobile", async ({ 
   await expect(page.locator(".metric").filter({ hasText: "Average tick" })).toContainText(
     "800 ticks",
   );
-  for (const view of ["Overview", "Call tree", "Hotspots", "Spikes", "Threads"]) {
+  for (const view of ["Overview", "Call tree", "Hotspots", "Spikes", "Network", "Threads"]) {
     await page.locator(`.nav-item[data-view="${view}"]`).click();
     await expect(page.locator(".page-heading h1")).toHaveText(view);
     expect(

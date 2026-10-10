@@ -1,4 +1,13 @@
-import type { PulseNode, PulseReport, PulseThread, PulseTick } from "../model/report.ts";
+import {
+  NETWORK_ACTIONS,
+  NETWORK_PHASES,
+  NETWORK_REASONS,
+  type PulseNetwork,
+  type PulseNode,
+  type PulseReport,
+  type PulseThread,
+  type PulseTick,
+} from "../model/report.ts";
 
 export const MAX_BYTES = 8_388_608;
 const MAX_INT = 9_223_372_036_854_775_807n;
@@ -38,9 +47,151 @@ function integer(value: unknown, min = 0n, max = MAX_INT): bigint {
 }
 
 function tuple(value: unknown, size: number): bigint[] {
+  return row(value, size).map((item) => integer(item));
+}
+
+function row(value: unknown, size: number): unknown[] {
   const row = list(value, size);
   requireValid(row.length === size, "Invalid report row length.");
-  return row.map((item) => integer(item));
+  return row;
+}
+
+function choice<T extends string>(value: unknown, values: readonly T[]): T {
+  requireValid(typeof value === "string" && values.includes(value as T), "Invalid network code.");
+  return value as T;
+}
+
+function network(
+  value: unknown,
+  length: bigint,
+  tickCount: bigint,
+  recording: boolean,
+  charge: (count: number) => void,
+): PulseNetwork {
+  const raw = object(value, 8);
+  const coverage = object(raw.coverage, 7);
+  requireValid(
+    coverage.from_ns === 0n &&
+      coverage.to_ns === length &&
+      coverage.window_ns === 1_000_000_000n &&
+      coverage.receive_layer === "mcpe_batch" &&
+      coverage.session_limit === 1024n &&
+      coverage.event_limit === 4096n &&
+      coverage.window_limit === 4096n,
+    "Invalid network coverage.",
+  );
+  const rawSessions = list(raw.sessions, 1024);
+  const rawEvents = list(raw.events, 4096);
+  const rawWindows = list(raw.windows, 4096);
+  charge(rawSessions.length + rawEvents.length + rawWindows.length);
+  const counterOverflows = integer(raw.counter_overflows);
+  let first = 0n;
+  const sessions = rawSessions.map((value, index) => {
+    const values = row(value, 6);
+    requireValid(values[0] === BigInt(index + 1), "Invalid network session ID.");
+    first = integer(values[1], first, length);
+    const phase = choice(values[4], NETWORK_PHASES);
+    const closedNs = values[5] === null ? null : integer(values[5], first, length);
+    requireValid(
+      (closedNs !== null) === (phase === "closed"),
+      "Invalid network session close time.",
+    );
+    return {
+      id: index + 1,
+      firstNs: first,
+      protocol: values[2] === null ? null : Number(integer(values[2], 0n, 4_294_967_295n)),
+      initialPhase: choice(values[3], NETWORK_PHASES),
+      phase,
+      closedNs,
+    };
+  });
+  function sessionId(value: unknown, offset: bigint): number | null {
+    if (value === null) return null;
+    const id = Number(integer(value, 1n, BigInt(sessions.length)));
+    requireValid(
+      (sessions[id - 1]?.firstNs ?? MAX_INT) <= offset,
+      "Network session referenced before observation.",
+    );
+    return id;
+  }
+  let previous = 0n;
+  const events = rawEvents.map((value) => {
+    const values = row(value, 9);
+    previous = integer(values[0], previous, length);
+    return {
+      offsetNs: previous,
+      tickId:
+        values[1] === null
+          ? null
+          : integer(values[1], 1n, recording && tickCount < MAX_INT ? tickCount + 1n : tickCount),
+      sessionId: sessionId(values[2], previous),
+      packetId: values[3] === null ? null : Number(integer(values[3], 0n, 1023n)),
+      reason: choice(values[4], NETWORK_REASONS),
+      observed: values[5] === null ? null : integer(values[5], -MAX_INT - 1n),
+      limit: values[6] === null ? null : integer(values[6], -MAX_INT - 1n),
+      action: choice(values[7], NETWORK_ACTIONS),
+      phase: choice(values[8], NETWORK_PHASES),
+    };
+  });
+  previous = 0n;
+  const seen = new Set<number | null>();
+  const windows = rawWindows.map((value) => {
+    const values = row(value, 11);
+    const offsetNs = integer(values[0], previous, length);
+    requireValid(offsetNs % 1_000_000_000n === 0n, "Invalid network window offset.");
+    if (offsetNs !== previous) seen.clear();
+    previous = offsetNs;
+    const end = offsetNs + 999_999_999n;
+    const id = sessionId(values[1], end < length ? end : length);
+    requireValid(!seen.has(id), "Duplicate network activity window.");
+    seen.add(id);
+    const counters = values.slice(2).map((value) => integer(value));
+    const [
+      batches,
+      packets,
+      receivedBytes,
+      decompressedBytes,
+      decoded,
+      decodeFailed,
+      pluginCancelled,
+      stateDropped,
+      repeatedDropped,
+    ] = counters as [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint];
+    requireValid(
+      decoded <= packets &&
+        decodeFailed <= packets &&
+        (counterOverflows > 0n || decodeFailed <= packets - decoded) &&
+        pluginCancelled <= packets &&
+        stateDropped <= packets &&
+        repeatedDropped <= packets,
+      "Invalid network packet counters.",
+    );
+    return {
+      offsetNs,
+      sessionId: id,
+      batches,
+      packets,
+      receivedBytes,
+      decompressedBytes,
+      decoded,
+      decodeFailed,
+      pluginCancelled,
+      stateDropped,
+      repeatedDropped,
+    };
+  });
+  return {
+    fromNs: 0n,
+    toNs: length,
+    windowNs: 1_000_000_000n,
+    sessions,
+    events,
+    windows,
+    counterOverflows,
+    sessionsDropped: integer(raw.sessions_dropped),
+    eventsDropped: integer(raw.events_dropped),
+    windowsDropped: integer(raw.windows_dropped),
+  };
 }
 
 function checkJsonBudget(json: string): void {
@@ -128,7 +279,7 @@ export async function parseReport(input: ArrayBuffer): Promise<PulseReport> {
         "This browser cannot read 64-bit Pulse values. Update your browser and try again.",
       );
       requireValid(/^-?\d{1,19}$/.test(context.source), "Report numbers must be 64-bit integers.");
-      return integer(BigInt(context.source));
+      return integer(BigInt(context.source), -MAX_INT - 1n);
     });
   } catch (error) {
     if (error instanceof ReportError) throw error;
@@ -140,8 +291,10 @@ export async function parseReport(input: ArrayBuffer): Promise<PulseReport> {
 function normalize(data: unknown): PulseReport {
   const report = object(data, 5);
   requireValid(
-    report.format === "quark.pulse" && report.version === 1n && report.time_unit === "ns",
-    "Unsupported Pulse format or version. Expected quark.pulse v1 in nanoseconds.",
+    report.format === "quark.pulse" &&
+      (report.version === 1n || report.version === 2n) &&
+      report.time_unit === "ns",
+    "Unsupported Pulse format or version. Expected quark.pulse v1 or v2 in nanoseconds.",
   );
   let textBudget = MAX_BYTES / 2;
   let rowBudget = 131_072;
@@ -166,7 +319,7 @@ function normalize(data: unknown): PulseReport {
   }
   const metadata = object(report.metadata, 7);
   const result: PulseReport = {
-    version: 1,
+    version: report.version === 1n ? 1 : 2,
     metadata: {
       quarkVersion: text(metadata.quark_version, 4096),
       phpVersion: text(metadata.php_version, 4096),
@@ -186,7 +339,7 @@ function normalize(data: unknown): PulseReport {
   };
   const names = new Set<string>();
   for (const value of list(report.threads, 128)) {
-    const raw = object(value, 20);
+    const raw = object(value, result.version === 1 ? 20 : 21);
     const name = text(raw.thread, 256);
     requireValid(!names.has(name), "Duplicate thread name.");
     names.add(name);
@@ -339,6 +492,8 @@ function normalize(data: unknown): PulseReport {
       droppedScopes: integer(raw.dropped_scopes),
       unbalancedTicks: integer(raw.unbalanced_ticks),
     };
+    if (result.version === 2)
+      thread.network = network(raw.network, endedNs - startedNs, tickCount, raw.recording, charge);
     result.threads.push(thread);
   }
   return result;

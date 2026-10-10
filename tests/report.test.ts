@@ -4,13 +4,213 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { PulseReport } from "../src/model/report.ts";
-import { analyze, compare, elapsed, percent, treeRows } from "../src/analysis.ts";
+import { analyze, compare, elapsed, networkActivity, percent, treeRows } from "../src/analysis.ts";
 import { parseInWorker } from "../src/parser/load.ts";
 import { MAX_BYTES, parseReport, ReportError } from "../src/parser/qpulse.ts";
 import { createShareLink, MAX_SHARE_BYTES, readShareLink } from "../src/share.ts";
 
 const gzip = readFileSync(new URL("./fixtures/quark-v1.qpulse", import.meta.url));
 const fixture = gunzipSync(gzip).toString("utf8");
+const networkGzip = readFileSync(new URL("./fixtures/network-v2.qpulse", import.meta.url));
+const networkFixture = gunzipSync(networkGzip).toString("utf8");
+
+test("Quark v2 telemetry preserves signed evidence and retained bucket counts without double-counting events as attacks", async () => {
+  const report = await parseReport(buffer(networkGzip));
+  assert.deepEqual(await parseReport(buffer(networkFixture)), report);
+  assert.equal(report.version, 2);
+  const network = report.threads[0]?.network;
+  assert.ok(network);
+  assert.equal(network.events[1]?.limit, -1n);
+  assert.equal(network.sessions[1]?.closedNs, 3_100_000_001n);
+  const activity = networkActivity(network);
+  assert.equal(activity.totals.packets, 437n);
+  assert.equal(activity.totals.decoded, 423n);
+  assert.equal(activity.totals.decodeFailed, 14n);
+  assert.equal(activity.totals.pluginCancelled, 16n);
+  assert.equal(activity.events.length, 4);
+  assert.equal(activity.buckets[3]?.packets, 324n);
+  assert.equal(activity.buckets.at(-1)?.offsetNs, 7_000_000_000n);
+  assert.equal(network.toNs, 7_750_000_000n);
+  assert.equal(networkActivity(network, 2).totals.packets, 8n);
+  assert.equal(networkActivity(network, 2).events.length, 3);
+  assert.equal(networkActivity(network, null).buckets.length, 0);
+  const extreme = await parseReport(
+    buffer(
+      changed((_report, thread) => {
+        assert.ok(thread.network);
+        rowAt(thread.network.events, 1)[6] = -9_223_372_036_854_775_808n;
+        rowAt(thread.network.windows, 0)[3] = 9_223_372_036_854_775_807n;
+      }, networkFixture),
+    ),
+  );
+  assert.equal(extreme.threads[0]?.network?.events[1]?.limit, -9_223_372_036_854_775_808n);
+  assert.equal(extreme.threads[0]?.network?.windows[0]?.packets, 9_223_372_036_854_775_807n);
+  assert.equal((await parseReport(buffer(gzip))).threads[0]?.network, undefined);
+  const url = new URL(
+    await createShareLink(
+      new File([buffer(networkGzip)], "network-v2.qpulse"),
+      "https://example.com/PulseViewer/",
+      false,
+    ),
+  );
+  const shared = readShareLink(url.hash);
+  assert.ok(shared);
+  assert.deepEqual(await parseReport(await shared.file.arrayBuffer()), report);
+});
+
+test("v2 network validation rejects malformed metadata, references, enums, signed counters and inconsistent rows", async () => {
+  for (const mutate of [
+    (network: RawNetwork) => {
+      network.coverage.to_ns = 1n;
+    },
+    (network: RawNetwork) => {
+      network.coverage.receive_layer = "wire";
+    },
+    (network: RawNetwork) => {
+      network.coverage.session_limit = 1025n;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.sessions, 0)[0] = 2n;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.sessions, 0)[2] = 4_294_967_296n;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.sessions, 1)[4] = "in_game";
+    },
+    (network: RawNetwork) => {
+      rowAt(network.sessions, 1)[5] = null;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.sessions, 1)[1] = 8_000_000_000n;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.events, 0)[2] = 3n;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.events, 0)[0] = 1n;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.events, 0)[1] = 1n;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.events, 0)[3] = 1024n;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.events, 0)[4] = "exploit";
+    },
+    (network: RawNetwork) => {
+      rowAt(network.events, 0)[7] = "ban";
+    },
+    (network: RawNetwork) => {
+      rowAt(network.events, 0)[8] = "<img>";
+    },
+    (network: RawNetwork) => {
+      network.events.reverse();
+    },
+    (network: RawNetwork) => {
+      rowAt(network.windows, 0)[0] = 1n;
+    },
+    (network: RawNetwork) => {
+      network.windows.push(rowAt(network.windows, network.windows.length - 1));
+    },
+    (network: RawNetwork) => {
+      rowAt(network.windows, 0)[2] = -1n;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.windows, 0)[6] = 13n;
+    },
+    (network: RawNetwork) => {
+      rowAt(network.windows, 0)[7] = 1n;
+    },
+    (network: RawNetwork) => {
+      network.events_dropped = -1n;
+    },
+    (network: RawNetwork) => {
+      network.sessions = Array(1025).fill(network.sessions[0]);
+    },
+    (network: RawNetwork) => {
+      network.events = Array(4097).fill(network.events[0]);
+    },
+    (network: RawNetwork) => {
+      network.windows = Array(4097).fill(network.windows[0]);
+    },
+  ])
+    await rejects(
+      changed((_report, thread) => {
+        assert.ok(thread.network);
+        mutate(thread.network);
+      }, networkFixture),
+    );
+  await rejects(networkFixture.replace('"version":2', '"version":1'));
+  await rejects(fixture.replace('"version":1', '"version":2'));
+});
+
+test("v2 bounds live ticks and charges network rows against the global report budget", async () => {
+  const live = changed((_report, thread) => {
+    thread.recording = true;
+    assert.ok(thread.network);
+    rowAt(thread.network.events, 0)[1] = 1n;
+    rowAt(thread.network.events, 0)[2] = null;
+    rowAt(thread.network.windows, 0)[1] = null;
+    thread.network.counter_overflows = 1n;
+    rowAt(thread.network.windows, 0)[7] = 1n;
+  }, networkFixture);
+  const accepted = await parseReport(buffer(live));
+  const network = accepted.threads[0]?.network;
+  assert.ok(network);
+  assert.equal(networkActivity(network, null).totals.packets, 12n);
+  await rejects(
+    changed((_report, thread) => {
+      assert.ok(thread.network);
+      rowAt(thread.network.events, 0)[1] = 2n;
+    }, live),
+  );
+  await rejects(
+    changed((report, thread) => {
+      assert.ok(thread.network);
+      thread.ended_ns = BigInt(thread.started_ns as bigint) + 4_096_000_000_000n;
+      thread.network.coverage.to_ns = 4_096_000_000_000n;
+      thread.network.sessions = Array.from({ length: 1024 }, (_, index) => [
+        BigInt(index + 1),
+        0n,
+        null,
+        "unknown",
+        "unknown",
+        null,
+      ]);
+      thread.network.events = Array.from({ length: 4096 }, () => [
+        0n,
+        null,
+        null,
+        null,
+        "rate.packet",
+        1n,
+        0n,
+        "reject_batch",
+        "unknown",
+      ]);
+      thread.network.windows = Array.from({ length: 4096 }, (_, index) => [
+        BigInt(index) * 1_000_000_000n,
+        null,
+        0n,
+        0n,
+        0n,
+        0n,
+        0n,
+        0n,
+        0n,
+        0n,
+        0n,
+      ]);
+      report.threads = Array.from({ length: 15 }, (_, index) => ({
+        ...thread,
+        thread: `network-${index}`,
+      }));
+    }, networkFixture),
+    /row limit/,
+  );
+});
 
 test("share links preserve captures, filenames and precision under a Pages subpath", async () => {
   for (const content of [gzip, fixture]) {
@@ -131,11 +331,25 @@ test("recursive hotspot totals remain inclusive, self time additive, and average
 });
 const rawJSON = Reflect.get(JSON, "rawJSON") as (text: string) => unknown;
 type RawThread = Record<string, unknown> & {
+  network?: RawNetwork;
   nodes: bigint[][];
   active_ticks: bigint[];
   zones: string[];
   ticks: bigint[][];
   spikes: { tick: bigint[]; nodes: bigint[][] }[];
+};
+
+function rowAt<T>(rows: T[], index: number): T {
+  const value = rows[index];
+  assert.ok(value);
+  return value;
+}
+
+type RawNetwork = Record<string, unknown> & {
+  coverage: Record<string, unknown>;
+  sessions: (bigint | string | null)[][];
+  events: (bigint | string | null)[][];
+  windows: (bigint | null)[][];
 };
 type RawReport = Record<string, unknown> & {
   metadata: Record<string, unknown>;
@@ -146,9 +360,9 @@ function buffer(value: string | Uint8Array): ArrayBuffer {
   return Uint8Array.from(typeof value === "string" ? Buffer.from(value) : value).buffer;
 }
 
-function changed(edit: (report: RawReport, thread: RawThread) => void): string {
+function changed(edit: (report: RawReport, thread: RawThread) => void, source = fixture): string {
   const report = JSON.parse(
-    fixture,
+    source,
     (_key: string, value: unknown, context?: { source: string }) => {
       if (typeof value !== "number") return value;
       assert.ok(context);

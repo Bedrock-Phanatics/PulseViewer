@@ -1,14 +1,24 @@
-import { analyze, compare, elapsed, percent, time, treeRows, type SortKey } from "./analysis.ts";
+import {
+  analyze,
+  compare,
+  elapsed,
+  networkActivity,
+  percent,
+  time,
+  treeRows,
+  type SortKey,
+} from "./analysis.ts";
 import type { PulseReport, PulseThread, PulseTick } from "./model/report.ts";
 
 const PAGE_SIZE = 75;
-const views = ["Overview", "Call tree", "Hotspots", "Spikes", "Threads"] as const;
+const views = ["Overview", "Call tree", "Hotspots", "Spikes", "Network", "Threads"] as const;
 type View = (typeof views)[number];
 const paths = [
   "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
   "M5 3v14h14M5 7h10M5 12h10M15 5v4M15 10v4M19 15v4",
   "M3 18h18M6 14V9M12 14V3M18 14V6",
   "M2 13h5l3-9 4 16 3-7h5",
+  "M3 4h6v6H3zM15 14h6v6h-6zM6 10v7h9M18 14V7H9",
   "M3 5h18M3 12h18M3 19h18M7 3v4M17 10v4M10 17v4",
 ];
 function icon(index: number): string {
@@ -60,6 +70,8 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
   let minimumSpike = 0;
   let flame = false;
   let flameRoot = 0;
+  let networkSession: number | null | "all" = "all";
+  let networkBucket = -1;
   const collapsed = new Set<number>();
   const thread = () => report.threads[threadIndex];
   const analysis = () => analyses[threadIndex];
@@ -76,6 +88,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
       current?.nodes.length ?? 0,
       analysis()?.hotspots.length ?? 0,
       current?.spikes.length ?? 0,
+      current?.network?.events.length ?? "",
       report.threads.length,
     ];
     const description =
@@ -87,8 +100,10 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
             ? "Find the zones with the greatest cost on this thread."
             : view === "Spikes"
               ? "Inspect the scopes recorded inside slow ticks."
-              : "Inspect the work recorded on each thread.";
-    host.innerHTML = `<aside class="sidebar"><div class="sidebar-label">Analysis${sample ? '<span class="sample-tag">Sample</span>' : ""}</div><nav aria-label="Analysis views">${views.map((name, index) => `<button class="nav-item${view === name ? " active" : ""}" data-view="${name}" ${view === name ? 'aria-current="page"' : ""}>${icon(index)}<span>${name}</span><small>${counts[index]}</small></button>`).join("")}</nav><div class="sidebar-section"><div class="sidebar-label">Capture</div>${metadata()}</div></aside><div class="analysis-content"><div class="page-heading"><div><div class="eyebrow">${sample ? "Sample capture" : "Capture analysis"}</div><h1>${view}</h1><p>${description}</p></div><label class="thread-picker"><span>Thread</span><select id="thread-select" aria-label="Thread" ${report.threads.length === 0 ? "disabled" : ""}>${report.threads.map((item, index) => `<option value="${index}" ${threadIndex === index ? "selected" : ""}>${html(item.name)}</option>`).join("") || "<option>No threads</option>"}</select></label></div>${current ? warnings(current) : ""}<div id="view-content">${!current && view !== "Threads" ? empty("This capture has no threads. Open another report to start exploring.") : view === "Overview" ? overview() : view === "Call tree" || view === "Hotspots" ? zoneView() : view === "Spikes" ? spikeView() : threadView()}</div></div>`;
+              : view === "Network"
+                ? "Inspect recorded traffic and packet-handling decisions."
+                : "Inspect the work recorded on each thread.";
+    host.innerHTML = `<aside class="sidebar"><div class="sidebar-label">Analysis${sample ? '<span class="sample-tag">Sample</span>' : ""}</div><nav aria-label="Analysis views">${views.map((name, index) => `<button class="nav-item${view === name ? " active" : ""}" data-view="${name}" ${view === name ? 'aria-current="page"' : ""}>${icon(index)}<span>${name}</span><small>${counts[index]}</small></button>`).join("")}</nav><div class="sidebar-section"><div class="sidebar-label">Capture</div>${metadata()}</div></aside><div class="analysis-content"><div class="page-heading"><div><div class="eyebrow">${sample ? "Sample capture" : "Capture analysis"}</div><h1>${view}</h1><p>${description}</p></div><label class="thread-picker"><span>Thread</span><select id="thread-select" aria-label="Thread" ${report.threads.length === 0 ? "disabled" : ""}>${report.threads.map((item, index) => `<option value="${index}" ${threadIndex === index ? "selected" : ""}>${html(item.name)}</option>`).join("") || "<option>No threads</option>"}</select></label></div>${current ? warnings(current) : ""}<div id="view-content">${!current && view !== "Threads" ? empty("This capture has no threads. Open another report to start exploring.") : view === "Overview" ? overview() : view === "Call tree" || view === "Hotspots" ? zoneView() : view === "Spikes" ? spikeView() : view === "Network" ? networkView() : threadView()}</div></div>`;
     if (view === "Overview") updateTick();
     if (view === "Spikes") updateSpike();
     if (
@@ -341,6 +356,97 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
       `<div class="table-scroll"><table class="thread-table"><thead><tr><th>Thread</th><th>Duration</th><th>Recorded self time</th><th>Ticks</th><th>Avg tick</th><th>Spikes</th><th></th></tr></thead><tbody>${report.threads.map((item, index) => `<tr><td>${html(item.name)}<small class="scope-path">${item.recording ? "Unfinished snapshot" : "Stopped capture"}, ${item.nodes.length} paths</small></td><td>${elapsed(item)}</td><td>${time(analyses[index]?.selfNs ?? 0n)}</td><td>${item.tickCount.toLocaleString()}</td><td>${time(item.tickCount ? item.tickTotalNs / item.tickCount : undefined)}</td><td>${item.spikes.length}</td><td><button class="text-button" data-thread="${index}">Inspect ↗</button></td></tr>`).join("")}</tbody></table></div>`,
     );
   }
+  function networkView(): string {
+    const item = thread();
+    const data = item?.network;
+    if (!data)
+      return empty(
+        "Network telemetry is unavailable in Pulse v1. Record a Pulse v2 capture with Quark to inspect packet activity.",
+      );
+    const activity = networkActivity(data, networkSession);
+    const { totals, buckets, events } = activity;
+    networkBucket = Math.max(
+      0,
+      Math.min(networkBucket < 0 ? buckets.length - 1 : networkBucket, buckets.length - 1),
+    );
+    const selected = buckets[networkBucket];
+    const session = data.sessions.find((session) => session.id === networkSession);
+    const count = (value: bigint) =>
+      `${data.counterOverflows ? "≥ " : ""}${value.toLocaleString()}`;
+    const seconds = (value: bigint) => `${(Number(value) / 1e9).toFixed(3)} s`;
+    const labels: Record<string, string> = {
+      "rate.batch": "Batch rate limit",
+      "rate.packet": "Packet rate limit",
+      "batch.packet_limit": "Batch packet limit",
+      "batch.empty": "Empty batch",
+      "batch.malformed": "Malformed batch",
+      "packet.unknown": "Unknown packet",
+      "packet.direction": "Invalid packet direction",
+      "packet.state": "Invalid packet state",
+      "packet.malformed": "Malformed packet",
+      "packet.handler_validation": "Handler validation failure",
+      "compression.algorithm": "Invalid compression algorithm",
+      "decompression.malformed": "Malformed compressed data",
+      "decompression.limit": "Decompression size limit",
+      "encryption.invalid": "Invalid encryption",
+      "packet.bad_packet_disconnect": "Bad packet disconnect",
+      "transport.header": "Invalid transport header",
+    };
+    const options = `<option value="all">All recorded sessions</option>${data.sessions.map((session) => `<option value="${session.id}" ${networkSession === session.id ? "selected" : ""}>Session ${session.id}</option>`).join("")}<option value="unknown" ${networkSession === null ? "selected" : ""}>Unattributed activity</option>`;
+    const maximum = buckets.reduce(
+      (max, bucket) => (bucket.packets > max ? bucket.packets : max),
+      1n,
+    );
+    const first = buckets[0]?.offsetNs ?? 0n;
+    const lastEnd = (buckets.at(-1)?.offsetNs ?? first) + data.windowNs;
+    const chartEnd = lastEnd < data.toNs ? lastEnd : data.toNs;
+    const span = chartEnd > first ? chartEnd - first : data.windowNs;
+    const bars: string[] = [];
+    const stride = Math.max(1, Math.ceil(buckets.length / 240));
+    for (let i = 0; i < buckets.length; i += stride) {
+      let peak = i;
+      for (let j = i + 1; j < Math.min(buckets.length, i + stride); j++)
+        if ((buckets[j]?.packets ?? 0n) > (buckets[peak]?.packets ?? 0n)) peak = j;
+      const bucket = buckets[peak];
+      if (!bucket) continue;
+      const x = 55 + (Number(bucket.offsetNs - first) / Number(span)) * 910;
+      const height =
+        bucket.packets === 0n ? 0 : Math.max(1, percent(bucket.packets, maximum) * 1.8);
+      const width = Math.max(2, Math.min(30, 910 / Math.max(1, buckets.length / stride) - 2));
+      bars.push(
+        `<rect data-network-bucket="${peak}" x="${x}" y="${200 - height}" width="${Math.max(0, Math.min(width, 965 - x))}" height="${height}" class="traffic-bar" />`,
+      );
+    }
+    const marker = selected ? 55 + (Number(selected.offsetNs - first) / Number(span)) * 910 : 55;
+    const chart = selected
+      ? `<div class="network-chart"><svg viewBox="0 0 1000 230" aria-label="Packets in retained one-second buckets"><text x="55" y="15">${maximum.toLocaleString()} packets</text><path d="M55 200H965" class="traffic-axis" />${bars.join("")}<path d="M${marker} 22V200" class="traffic-selected" /><text x="55" y="225">${seconds(first)}</text><text x="965" y="225" text-anchor="end">${seconds(chartEnd)}</text></svg></div><div class="network-bucket-controls"><label for="network-bucket">Select activity bucket</label><input id="network-bucket" type="range" min="0" max="${buckets.length - 1}" value="${networkBucket}" aria-valuetext="${seconds(selected.offsetNs)}, ${selected.packets.toLocaleString()} packets" /></div><div class="tick-detail"><span>Bucket <b>${seconds(selected.offsetNs)}</b>${selected.offsetNs + data.windowNs > data.toNs ? " (partial)" : ""}${data.windowsDropped > 0n && selected.offsetNs === data.windows[0]?.offsetNs ? " (may be incomplete)" : ""}</span><strong>${count(selected.packets)} packets</strong><span>${count(selected.receivedBytes)} received bytes</span><span>${count(selected.decodeFailed)} decoding failures</span></div>`
+      : empty("No activity windows were retained for this selection.");
+    const outcome = (
+      [
+        ["Decoded", totals.decoded],
+        ["Decode failed", totals.decodeFailed],
+        ["Plugin cancelled", totals.pluginCancelled],
+        ["State discarded", totals.stateDropped],
+        ["Repeated discarded", totals.repeatedDropped],
+      ] as const
+    )
+      .map(
+        ([label, value]) =>
+          `<div class="network-outcome"><span>${label}</span><span class="bar-track"><span style="width:${percent(value, totals.packets)}%"></span></span><strong>${count(value)}</strong></div>`,
+      )
+      .join("");
+    page = Math.max(0, Math.min(page, Math.ceil(events.length / PAGE_SIZE) - 1));
+    const eventRows = events
+      .slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+      .map(
+        (event) =>
+          `<tr><td title="${event.offsetNs} ns">${seconds(event.offsetNs)}<small class="scope-path">${event.tickId === null ? "Tick unavailable" : `Tick #${event.tickId}`}</small></td><td>${event.sessionId === null ? "Unattributed" : `Session ${event.sessionId}`}</td><td>${event.packetId === null ? "Unknown" : event.packetId}</td><td>${labels[event.reason]}<small class="scope-path">${event.reason}</small></td><td>${event.action.replaceAll("_", " ")}</td><td>${event.phase.replaceAll("_", " ")}</td><td>${event.observed === null ? "Unknown" : event.observed.toLocaleString()}</td><td>${event.limit === null ? "Unknown" : event.limit.toLocaleString()}</td></tr>`,
+      )
+      .join("");
+    const losses =
+      data.sessionsDropped || data.eventsDropped || data.windowsDropped || data.counterOverflows;
+    return `<div class="network-toolbar"><label for="network-session">Session</label><select id="network-session">${options}</select><span>${session ? `Protocol ${session.protocol ?? "unknown"}, ${session.phase.replaceAll("_", " ")}. First observed ${seconds(session.firstNs)}${session.closedNs === null ? "" : `, closed ${seconds(session.closedNs)}`}` : "Session IDs are local to this thread and capture."}</span></div>${losses ? '<p class="notice">Telemetry is incomplete. Retained totals may understate activity. See coverage details below.</p>' : ""}<div class="metrics">${metric("Recorded packets", count(totals.packets), "Retained windows", true)}${metric("Received bytes", count(totals.receivedBytes), "MCPE batches, before decryption")}${metric("Decompressed bytes", count(totals.decompressedBytes), "Retained window total")}${metric("Decoding failures", count(totals.decodeFailed), "Separate from plugin cancellations")}${metric("Recorded events", events.length.toLocaleString(), "Event records, not attack count")}</div>${panel("Packet activity", stride > 1 ? "Each bar shows the busiest retained bucket in that part of the timeline. Select a bucket for exact counts." : "Each bar shows packets in a retained one-second bucket. Click a bar or use the slider to inspect it.", chart)}<div class="overview-grid">${panel("Packet outcomes", "Counts overlap. A decoded packet may be cancelled or discarded later.", `<div class="network-outcomes">${outcome}</div>`)}${panel("Capture coverage", `${seconds(data.fromNs)} to ${seconds(data.toNs)} on this thread`, `<dl class="network-coverage"><dt>Retained sessions</dt><dd>${data.sessions.length}</dd><dt>Sessions not retained</dt><dd>${data.sessionsDropped.toLocaleString()}</dd><dt>Events evicted</dt><dd>${data.eventsDropped.toLocaleString()}</dd><dt>Windows evicted</dt><dd>${data.windowsDropped.toLocaleString()}</dd><dt>Counter saturations</dt><dd>${data.counterOverflows.toLocaleString()}</dd></dl>`)}</div>${panel("Recorded decisions", "Events show validation failures and enforced limits. They do not establish malicious intent.", `<div class="table-scroll"><table id="network-events" class="network-events"><thead><tr><th>Time</th><th>Session</th><th>Packet ID</th><th>Reason</th><th>Action</th><th>Phase</th><th>Observed</th><th>Limit or expected</th></tr></thead><tbody>${eventRows}</tbody></table></div>${events.length ? pagination(events.length) : empty("No decision events were retained for this selection.")}`)}<details class="network-notes"><summary>How to read this evidence</summary><p>One failure can produce a rejection and a separate disconnect event. Event records are not distinct attacks. Rate-limit observations compare requested tokens with available token budget. Decompression-limit observations may be a measured decoded prefix or a declared output length, rather than the full payload size.</p><p>Traffic bytes exclude RakNet framing. Unknown session IDs may combine activity from unretained sessions. Missing buckets are not reconstructed; evictions may leave the earliest retained bucket incomplete. Counter saturation makes displayed window totals lower bounds. The final bucket may cover less than one second. Recording gaps prevent conclusions about unrecorded traffic.</p></details>`;
+  }
   function resetThread(index: number): void {
     if (!report.threads[index]) return;
     threadIndex = index;
@@ -350,6 +456,8 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     selectedSpike = undefined;
     collapsed.clear();
     flameRoot = 0;
+    networkSession = "all";
+    networkBucket = -1;
     render();
   }
   function updateZones(): void {
@@ -369,13 +477,16 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     }
     const target =
       event.target instanceof Element
-        ? event.target.closest<HTMLElement>("button,[data-flame-node]")
+        ? event.target.closest<HTMLElement>("button,[data-flame-node],[data-network-bucket]")
         : null;
     if (!target || target.matches(":disabled")) return;
     const action = target.dataset;
     if (action.view && views.includes(action.view as View)) {
       view = action.view as View;
       page = 0;
+      render();
+    } else if (action.networkBucket !== undefined) {
+      networkBucket = Number(action.networkBucket);
       render();
     } else if (action.thread) {
       view = "Overview";
@@ -423,6 +534,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     } else if (action.page) {
       page += Number(action.page);
       if (view === "Spikes") updateSpike();
+      else if (view === "Network") render();
       else updateZones();
     } else if (action.expand !== undefined) {
       collapsed.clear();
@@ -475,13 +587,22 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     const target = event.target;
     if (target instanceof HTMLSelectElement) {
       if (target.id === "thread-select") resetThread(Number(target.value));
-      else if (target.id === "zone-filter") {
+      else if (target.id === "network-session") {
+        networkSession =
+          target.value === "all" ? "all" : target.value === "unknown" ? null : Number(target.value);
+        networkBucket = -1;
+        page = 0;
+        render();
+      } else if (target.id === "zone-filter") {
         filter = target.value;
         page = 0;
         updateZones();
       }
     } else if (target instanceof HTMLInputElement && target.validity.valid && target.value) {
-      if (target.id === "budget") {
+      if (target.id === "network-bucket") {
+        networkBucket = Number(target.value);
+        render();
+      } else if (target.id === "budget") {
         budgetMs = Number(target.value);
         render();
       } else if (target.id === "minimum-spike") {

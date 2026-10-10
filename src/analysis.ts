@@ -1,4 +1,39 @@
-import type { PulseNode, PulseThread } from "./model/report.ts";
+import type { PulseNetwork, PulseNode, PulseThread } from "./model/report.ts";
+
+export function networkActivity(network: PulseNetwork, session: number | null | "all" = "all") {
+  const buckets = new Map<
+    bigint,
+    { offsetNs: bigint; packets: bigint; receivedBytes: bigint; decodeFailed: bigint }
+  >();
+  const totals = {
+    batches: 0n,
+    packets: 0n,
+    receivedBytes: 0n,
+    decompressedBytes: 0n,
+    decoded: 0n,
+    decodeFailed: 0n,
+    pluginCancelled: 0n,
+    stateDropped: 0n,
+    repeatedDropped: 0n,
+  };
+  for (const window of network.windows) {
+    if (session !== "all" && window.sessionId !== session) continue;
+    for (const key of Object.keys(totals) as (keyof typeof totals)[]) totals[key] += window[key];
+    let bucket = buckets.get(window.offsetNs);
+    if (!bucket) {
+      bucket = { offsetNs: window.offsetNs, packets: 0n, receivedBytes: 0n, decodeFailed: 0n };
+      buckets.set(window.offsetNs, bucket);
+    }
+    bucket.packets += window.packets;
+    bucket.receivedBytes += window.receivedBytes;
+    bucket.decodeFailed += window.decodeFailed;
+  }
+  return {
+    totals,
+    buckets: [...buckets.values()],
+    events: network.events.filter((event) => session === "all" || event.sessionId === session),
+  };
+}
 
 export interface Hotspot {
   name: string;

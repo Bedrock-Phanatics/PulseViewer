@@ -27,7 +27,89 @@ export interface PulseSpike {
   nodes: SpikeNode[];
 }
 
+export const NETWORK_PHASES = [
+  "session_start",
+  "login",
+  "awaiting_async",
+  "handshake",
+  "resource_packs",
+  "pre_spawn",
+  "spawn_response",
+  "in_game",
+  "death",
+  "closed",
+  "unknown",
+] as const;
+export const NETWORK_REASONS = [
+  "rate.batch",
+  "rate.packet",
+  "batch.packet_limit",
+  "batch.empty",
+  "batch.malformed",
+  "packet.unknown",
+  "packet.direction",
+  "packet.state",
+  "packet.malformed",
+  "packet.handler_validation",
+  "compression.algorithm",
+  "decompression.malformed",
+  "decompression.limit",
+  "encryption.invalid",
+  "packet.bad_packet_disconnect",
+  "transport.header",
+] as const;
+export const NETWORK_ACTIONS = ["drop_packet", "drop_batch", "reject_batch", "disconnect"] as const;
+
+export interface NetworkSession {
+  id: number;
+  firstNs: bigint;
+  protocol: number | null;
+  initialPhase: (typeof NETWORK_PHASES)[number];
+  phase: (typeof NETWORK_PHASES)[number];
+  closedNs: bigint | null;
+}
+
+export interface NetworkEvent {
+  offsetNs: bigint;
+  tickId: bigint | null;
+  sessionId: number | null;
+  packetId: number | null;
+  reason: (typeof NETWORK_REASONS)[number];
+  observed: bigint | null;
+  limit: bigint | null;
+  action: (typeof NETWORK_ACTIONS)[number];
+  phase: (typeof NETWORK_PHASES)[number];
+}
+
+export interface NetworkWindow {
+  offsetNs: bigint;
+  sessionId: number | null;
+  batches: bigint;
+  packets: bigint;
+  receivedBytes: bigint;
+  decompressedBytes: bigint;
+  decoded: bigint;
+  decodeFailed: bigint;
+  pluginCancelled: bigint;
+  stateDropped: bigint;
+  repeatedDropped: bigint;
+}
+
+export interface PulseNetwork {
+  fromNs: bigint;
+  toNs: bigint;
+  windowNs: bigint;
+  sessions: NetworkSession[];
+  events: NetworkEvent[];
+  windows: NetworkWindow[];
+  sessionsDropped: bigint;
+  eventsDropped: bigint;
+  windowsDropped: bigint;
+  counterOverflows: bigint;
+}
+
 export interface PulseThread {
+  network?: PulseNetwork;
   name: string;
   startedNs: bigint;
   endedNs: bigint;
@@ -50,7 +132,7 @@ export interface PulseThread {
 }
 
 export interface PulseReport {
-  version: 1;
+  version: 1 | 2;
   metadata: {
     quarkVersion: string;
     phpVersion: string;
