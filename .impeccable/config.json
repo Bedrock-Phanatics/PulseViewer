@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          "index.html"
+        ],
+        "createdAt": "2026-10-21T04:00:48.307Z",
+        "reason": "Agent: linked CSS sets the welcome h1 to 42-64px and report h1 to 30-38px; the HTML-only detector reads both as 16px"
+      }
+    ]
+  }
+}
