@@ -69,7 +69,8 @@ select {
   transition:
     background-color 120ms,
     border-color 120ms,
-    color 120ms;
+    color 120ms,
+    transform 120ms;
 }
 button,
 summary {
@@ -77,6 +78,9 @@ summary {
 }
 button:hover {
   background: #242d30;
+}
+button:active:not(:disabled) {
+  transform: translateY(1px);
 }
 button:disabled {
   opacity: 0.4;
@@ -1037,7 +1041,9 @@ tbody tr:last-child td {
 }
 .spike-row.selected {
   background: #263931;
-  border-left: 2px solid #a5dac5;
+}
+:where(.spike-row).selected strong {
+  color: var(--accent);
 }
 .spike-duration {
   font: 22px var(--sans);

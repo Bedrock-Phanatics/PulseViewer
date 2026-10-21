@@ -8,11 +8,12 @@ import {
   treeRows,
   type SortKey,
 } from "./analysis.ts";
-import type { PulseReport, PulseThread, PulseTick } from "./model/report.ts";
+import type { PulseNetwork, PulseReport, PulseThread, PulseTick } from "./model/report.ts";
 
 const PAGE_SIZE = 75;
 const views = ["Overview", "Call tree", "Hotspots", "Spikes", "Network", "Threads"] as const;
 type View = (typeof views)[number];
+type ActivityBucket = ReturnType<typeof networkActivity>["buckets"][number];
 const paths = [
   "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
   "M5 3v14h14M5 7h10M5 12h10M15 5v4M15 10v4M19 15v4",
@@ -72,6 +73,9 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
   let flameRoot = 0;
   let networkSession: number | null | "all" = "all";
   let networkBucket = -1;
+  let networkBuckets: ActivityBucket[] = [];
+  let networkFirst = 0n;
+  let networkSpan = 1n;
   const collapsed = new Set<number>();
   const thread = () => report.threads[threadIndex];
   const analysis = () => analyses[threadIndex];
@@ -356,6 +360,30 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
       `<div class="table-scroll"><table class="thread-table"><thead><tr><th>Thread</th><th>Duration</th><th>Recorded self time</th><th>Ticks</th><th>Avg tick</th><th>Spikes</th><th></th></tr></thead><tbody>${report.threads.map((item, index) => `<tr><td>${html(item.name)}<small class="scope-path">${item.recording ? "Unfinished snapshot" : "Stopped capture"}, ${item.nodes.length} paths</small></td><td>${elapsed(item)}</td><td>${time(analyses[index]?.selfNs ?? 0n)}</td><td>${item.tickCount.toLocaleString()}</td><td>${time(item.tickCount ? item.tickTotalNs / item.tickCount : undefined)}</td><td>${item.spikes.length}</td><td><button class="text-button" data-thread="${index}">Inspect ↗</button></td></tr>`).join("")}</tbody></table></div>`,
     );
   }
+  function bucketDetail(data: PulseNetwork, bucket: ActivityBucket): string {
+    const seconds = (value: bigint) => `${(Number(value) / 1e9).toFixed(3)} s`;
+    const count = (value: bigint) =>
+      `${data.counterOverflows ? "≥ " : ""}${value.toLocaleString()}`;
+    return `<span>Bucket <b>${seconds(bucket.offsetNs)}</b>${bucket.offsetNs + data.windowNs > data.toNs ? " (partial)" : ""}${data.windowsDropped > 0n && bucket.offsetNs === data.windows[0]?.offsetNs ? " (may be incomplete)" : ""}</span><strong>${count(bucket.packets)} packets</strong><span>${count(bucket.receivedBytes)} received bytes</span><span>${count(bucket.decodeFailed)} decoding failures</span>`;
+  }
+  function selectNetworkBucket(index: number): void {
+    const data = thread()?.network;
+    const selected = networkBuckets[index];
+    if (!data || !selected) return;
+    networkBucket = index;
+    const slider = host.querySelector<HTMLInputElement>("#network-bucket");
+    if (slider) {
+      slider.value = String(index);
+      slider.setAttribute(
+        "aria-valuetext",
+        `${(Number(selected.offsetNs) / 1e9).toFixed(3)} s, ${selected.packets.toLocaleString()} packets`,
+      );
+    }
+    const marker = 55 + (Number(selected.offsetNs - networkFirst) / Number(networkSpan)) * 910;
+    host.querySelector(".traffic-selected")?.setAttribute("d", `M${marker} 22V200`);
+    const detail = host.querySelector<HTMLElement>("#network-bucket-detail");
+    if (detail) detail.innerHTML = bucketDetail(data, selected);
+  }
   function networkView(): string {
     const item = thread();
     const data = item?.network;
@@ -401,6 +429,9 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     const lastEnd = (buckets.at(-1)?.offsetNs ?? first) + data.windowNs;
     const chartEnd = lastEnd < data.toNs ? lastEnd : data.toNs;
     const span = chartEnd > first ? chartEnd - first : data.windowNs;
+    networkBuckets = buckets;
+    networkFirst = first;
+    networkSpan = span;
     const bars: string[] = [];
     const stride = Math.max(1, Math.ceil(buckets.length / 240));
     for (let i = 0; i < buckets.length; i += stride) {
@@ -419,7 +450,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     }
     const marker = selected ? 55 + (Number(selected.offsetNs - first) / Number(span)) * 910 : 55;
     const chart = selected
-      ? `<div class="network-chart"><svg viewBox="0 0 1000 230" aria-label="Packets in retained one-second buckets"><text x="55" y="15">${maximum.toLocaleString()} packets</text><path d="M55 200H965" class="traffic-axis" />${bars.join("")}<path d="M${marker} 22V200" class="traffic-selected" /><text x="55" y="225">${seconds(first)}</text><text x="965" y="225" text-anchor="end">${seconds(chartEnd)}</text></svg></div><div class="network-bucket-controls"><label for="network-bucket">Select activity bucket</label><input id="network-bucket" type="range" min="0" max="${buckets.length - 1}" value="${networkBucket}" aria-valuetext="${seconds(selected.offsetNs)}, ${selected.packets.toLocaleString()} packets" /></div><div class="tick-detail"><span>Bucket <b>${seconds(selected.offsetNs)}</b>${selected.offsetNs + data.windowNs > data.toNs ? " (partial)" : ""}${data.windowsDropped > 0n && selected.offsetNs === data.windows[0]?.offsetNs ? " (may be incomplete)" : ""}</span><strong>${count(selected.packets)} packets</strong><span>${count(selected.receivedBytes)} received bytes</span><span>${count(selected.decodeFailed)} decoding failures</span></div>`
+      ? `<div class="network-chart"><svg viewBox="0 0 1000 230" aria-label="Packets in retained one-second buckets"><text x="55" y="15">${maximum.toLocaleString()} packets</text><path d="M55 200H965" class="traffic-axis" />${bars.join("")}<path d="M${marker} 22V200" class="traffic-selected" /><text x="55" y="225">${seconds(first)}</text><text x="965" y="225" text-anchor="end">${seconds(chartEnd)}</text></svg></div><div class="network-bucket-controls"><label for="network-bucket">Select activity bucket</label><input id="network-bucket" type="range" min="0" max="${buckets.length - 1}" value="${networkBucket}" aria-valuetext="${seconds(selected.offsetNs)}, ${selected.packets.toLocaleString()} packets" /></div><div id="network-bucket-detail" class="tick-detail">${bucketDetail(data, selected)}</div>`
       : empty("No activity windows were retained for this selection.");
     const outcome = (
       [
@@ -486,8 +517,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
       page = 0;
       render();
     } else if (action.networkBucket !== undefined) {
-      networkBucket = Number(action.networkBucket);
-      render();
+      selectNetworkBucket(Number(action.networkBucket));
     } else if (action.thread) {
       view = "Overview";
       resetThread(Number(action.thread));
@@ -506,7 +536,12 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     } else if (action.selectSpike) {
       selectedSpike = BigInt(action.selectSpike);
       page = 0;
-      render();
+      for (const row of host.querySelectorAll<HTMLElement>(".spike-row")) {
+        const selected = row.dataset.selectSpike === action.selectSpike;
+        row.classList.toggle("selected", selected);
+        row.setAttribute("aria-pressed", String(selected));
+      }
+      updateSpike();
     } else if (action.historyTick) {
       view = "Overview";
       tickPinned = true;
@@ -581,6 +616,8 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
       tickPinned = true;
       selectedTick = Number(target.value);
       updateTick();
+    } else if (target.id === "network-bucket") {
+      selectNetworkBucket(Number(target.value));
     }
   };
   host.onchange = (event) => {
@@ -600,8 +637,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
       }
     } else if (target instanceof HTMLInputElement && target.validity.valid && target.value) {
       if (target.id === "network-bucket") {
-        networkBucket = Number(target.value);
-        render();
+        selectNetworkBucket(Number(target.value));
       } else if (target.id === "budget") {
         budgetMs = Number(target.value);
         render();

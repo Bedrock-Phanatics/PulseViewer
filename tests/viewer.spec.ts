@@ -30,6 +30,12 @@ test("v2 network evidence is inspectable, session-filtered and shareable", async
   await page.keyboard.press("ArrowLeft");
   await expect(page.locator(".tick-detail")).toContainText("18 packets");
   await expect(page.getByRole("slider", { name: "Select activity bucket" })).toBeFocused();
+  await page.locator("#network-bucket").evaluate((slider: HTMLInputElement) => {
+    slider.value = "3";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect(page.locator("#network-bucket-detail")).toContainText("324 packets");
+  await expect(page.getByRole("slider", { name: "Select activity bucket" })).toBeFocused();
   await page.getByLabel("Session", { exact: true }).selectOption("2");
   await expect(page.locator(".metric").filter({ hasText: "Recorded packets" })).toContainText("8");
   await expect(page.locator(".network-events tbody tr")).toHaveCount(3);
@@ -476,6 +482,7 @@ test("metrics, timeline, hotspot sorting, tree expansion, flame zoom, spikes and
   await expect(page.locator("#spike-detail h2")).toHaveText("Tick #4");
   await expect(page.locator("#spike-detail tbody")).toContainText("event.SkyWars.PlayerMoveEvent");
   await page.locator('[data-select-spike="2"]').click();
+  await expect(page.locator('[data-select-spike="2"]')).toBeFocused();
   await expect(page.locator(".neighbors")).toContainText("#3");
   await expect(page.locator('.neighbors [data-history-tick="2"]')).toHaveCount(0);
   await page.getByRole("button", { name: "Hotspots", exact: false }).first().click();
