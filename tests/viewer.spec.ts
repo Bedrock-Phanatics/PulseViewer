@@ -416,6 +416,8 @@ for (const width of [375, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/");
     await page.keyboard.press("Tab");
+    await expect(page.getByRole("link", { name: "Skip to content" })).toBeFocused();
+    await page.keyboard.press("Tab");
     await expect(page.getByRole("link", { name: "Pulse Viewer home" })).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name: "Open .qpulse report" })).toBeFocused();
@@ -447,7 +449,7 @@ test("metrics, timeline, hotspot sorting, tree expansion, flame zoom, spikes and
       .locator(".metric strong")
       .first()
       .evaluate((element) => getComputedStyle(element).fontFamily),
-  ).toContain("Arial");
+  ).toContain("Segoe UI");
 
   await expect(page.locator(".metric").filter({ hasText: "Average tick" })).toContainText(
     "42.50 ms",
