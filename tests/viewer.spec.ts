@@ -7,6 +7,38 @@ import { gunzipSync, gzipSync } from "node:zlib";
 
 const fixture = "tests/fixtures/quark-v1.qpulse";
 
+test("security policy blocks injected scripts, external requests and base URLs", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const violations = await page.evaluate(async () => {
+    const blocked: string[] = [];
+    const violations = new Promise<void>((resolve) => {
+      document.addEventListener("securitypolicyviolation", (event) => {
+        blocked.push(event.effectiveDirective);
+        if (["script-src-elem", "connect-src", "base-uri"].every((name) => blocked.includes(name)))
+          resolve();
+      });
+    });
+    const script = document.createElement("script");
+    script.textContent = "window.compromised = true";
+    document.head.append(script);
+    const base = document.createElement("base");
+    base.href = "https://example.com/";
+    document.head.append(base);
+    await fetch("https://example.com/capture").catch(() => {});
+    await violations;
+    return { blocked, baseURI: document.baseURI };
+  });
+  expect(await page.evaluate("window.compromised")).toBeUndefined();
+  expect(violations.baseURI).toBe(page.url());
+  expect(violations.blocked).toEqual(
+    expect.arrayContaining(["script-src-elem", "connect-src", "base-uri"]),
+  );
+  await page.getByRole("button", { name: "Explore sample" }).click();
+  await expect(page.getByRole("status")).toHaveText("Report loaded.");
+});
+
 test("v2 network evidence is inspectable, session-filtered and shareable", async ({ page }) => {
   await page.goto("/");
   await page.locator("#report-file").setInputFiles("tests/fixtures/network-v2.qpulse");
