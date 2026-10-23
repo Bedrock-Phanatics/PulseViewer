@@ -11,6 +11,10 @@ test("security policy blocks injected scripts, external requests and base URLs",
   page,
 }) => {
   await page.goto("/");
+  await expect(page.locator('meta[http-equiv="Content-Security-Policy"]')).toHaveAttribute(
+    "content",
+    expect.stringContaining("script-src 'self'"),
+  );
   const violations = await page.evaluate(async () => {
     const blocked: string[] = [];
     const violations = new Promise<void>((resolve) => {
