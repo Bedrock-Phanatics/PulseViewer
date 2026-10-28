@@ -7,6 +7,9 @@ import "./style.css";
 const open = document.querySelector<HTMLButtonElement>("#open-report");
 const input = document.querySelector<HTMLInputElement>("#report-file");
 const status = document.querySelector<HTMLParagraphElement>("#status");
+const main = document.querySelector<HTMLElement>("#main");
+const loadingState = document.querySelector<HTMLElement>("#loading-state");
+const loadingTitle = document.querySelector<HTMLElement>("#loading-title");
 const error = document.querySelector<HTMLParagraphElement>("#error");
 const summary = document.querySelector<HTMLElement>("#report-summary");
 const filename = document.querySelector<HTMLSpanElement>("#filename");
@@ -22,6 +25,9 @@ if (
   !open ||
   !input ||
   !status ||
+  !main ||
+  !loadingState ||
+  !loadingTitle ||
   !error ||
   !summary ||
   !filename ||
@@ -40,6 +46,9 @@ const ui = {
   open,
   input,
   status,
+  main,
+  loadingState,
+  loadingTitle,
   error,
   summary,
   filename,
@@ -66,6 +75,11 @@ async function load(
   if (loading) return;
   const startedHash = location.hash;
   loading = true;
+  document.body.classList.remove("dragging");
+  ui.main.setAttribute("aria-busy", "true");
+  ui.loadingState.hidden = false;
+  ui.loadingTitle.textContent =
+    typeof source === "function" ? "Fetching sample…" : "Reading report…";
   ui.share.disabled = true;
   ui.shareDialog.close();
   ui.open.disabled = true;
@@ -77,7 +91,9 @@ async function load(
   try {
     const file = typeof source === "function" ? await source() : source;
     if (file.size > MAX_BYTES) throw new ReportError("Report exceeds the 8 MiB limit.");
-    const report = await parseInWorker(await file.arrayBuffer());
+    const bytes = await file.arrayBuffer();
+    ui.loadingTitle.textContent = "Analyzing capture…";
+    const report = await parseInWorker(bytes);
     showReport(ui.summary, report, sample);
     currentFile = file;
     currentSample = sample;
@@ -104,6 +120,8 @@ async function load(
     ui.status.textContent = "";
   } finally {
     loading = false;
+    ui.loadingState.hidden = true;
+    ui.main.setAttribute("aria-busy", "false");
     ui.open.disabled = false;
     ui.welcomeOpen.disabled = false;
     ui.sampleOpen.disabled = false;
@@ -123,7 +141,9 @@ ui.share.addEventListener("click", async () => {
   if (!file || loading) return;
   ui.shareLink.value = "";
   ui.shareCopy.disabled = true;
+  ui.shareCopy.textContent = "Copy link";
   ui.shareMessage.textContent = "Creating link…";
+  ui.shareDialog.setAttribute("aria-busy", "true");
   ui.shareDialog.showModal();
   try {
     sharePromise ??= createShareLink(file, location.href, currentSample);
@@ -142,21 +162,32 @@ ui.share.addEventListener("click", async () => {
       cause instanceof ReportError
         ? cause.message
         : "Unable to create a link. Share the .qpulse file instead.";
+  } finally {
+    if (currentFile === file) ui.shareDialog.setAttribute("aria-busy", "false");
   }
 });
 ui.shareLink.addEventListener("click", () => ui.shareLink.select());
 ui.shareCopy.addEventListener("click", async () => {
   const link = ui.shareLink.value;
-  if (!link) return;
+  const file = currentFile;
+  if (!link || ui.shareCopy.disabled) return;
+  ui.shareCopy.disabled = true;
+  ui.shareCopy.textContent = "Copying…";
   try {
     await navigator.clipboard.writeText(link);
-    if (ui.shareLink.value === link) ui.shareMessage.textContent = "Link copied.";
+    if (currentFile === file && ui.shareDialog.open && ui.shareLink.value === link)
+      ui.shareMessage.textContent = "Link copied.";
   } catch {
-    if (ui.shareLink.value !== link) return;
+    if (currentFile !== file || !ui.shareDialog.open || ui.shareLink.value !== link) return;
     ui.shareMessage.textContent =
       "Copy the selected link manually. Automatic copying is unavailable.";
     ui.shareLink.focus();
     ui.shareLink.select();
+  } finally {
+    if (currentFile === file && ui.shareLink.value === link) {
+      ui.shareCopy.disabled = false;
+      ui.shareCopy.textContent = "Copy link";
+    }
   }
 });
 
@@ -190,6 +221,7 @@ ui.sampleOpen.addEventListener("click", () => {
 });
 document.addEventListener("keydown", (event) => {
   if (
+    loading ||
     event.key !== "/" ||
     event.ctrlKey ||
     event.metaKey ||
@@ -213,7 +245,7 @@ document.addEventListener("dragover", (event) => {
   if (!event.dataTransfer?.types.includes("Files")) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = loading ? "none" : "copy";
-  document.body.classList.add("dragging");
+  document.body.classList.toggle("dragging", !loading);
 });
 document.addEventListener("dragleave", (event) => {
   if (event.relatedTarget === null) document.body.classList.remove("dragging");

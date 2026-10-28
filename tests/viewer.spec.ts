@@ -7,6 +7,141 @@ import { gunzipSync, gzipSync } from "node:zlib";
 
 const fixture = "tests/fixtures/quark-v1.qpulse";
 
+for (const reducedMotion of ["no-preference", "reduce"] as const) {
+  test(`loading feedback, recovery and motion preference: ${reducedMotion}`, async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 900 });
+    await page.emulateMedia({ reducedMotion });
+    await page.goto("/");
+    let releaseSample!: () => void;
+    const sampleGate = new Promise<void>((done) => {
+      releaseSample = done;
+    });
+    await page.route("**/sample.qpulse", async (route) => {
+      await sampleGate;
+      await route.fulfill({ status: 503, body: "Unavailable" });
+    });
+    try {
+      await page.getByRole("button", { name: "Explore sample" }).click();
+      await expect(page.locator("#main")).toHaveAttribute("aria-busy", "true");
+      await expect(page.locator("#loading-title")).toHaveText("Fetching sample…");
+      await expect(page.locator("#drop-zone")).toBeHidden();
+      await expect(page.locator("#open-report")).toBeDisabled();
+      await page.evaluate(() => {
+        const transfer = new DataTransfer();
+        transfer.items.add(new File(["{}"], "ignored.qpulse"));
+        document.dispatchEvent(
+          new DragEvent("dragover", { dataTransfer: transfer, bubbles: true }),
+        );
+        document.dispatchEvent(new DragEvent("drop", { dataTransfer: transfer, bubbles: true }));
+      });
+      await expect(page.locator(".drop-overlay")).toBeHidden();
+      await expect(page.locator("#loading-title")).toHaveText("Fetching sample…");
+      expect(
+        await page
+          .locator(".loading-spinner")
+          .evaluate((element) => getComputedStyle(element).animationName),
+      ).toBe(reducedMotion === "reduce" ? "none" : "loading-turn");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+        true,
+      );
+      if (reducedMotion === "no-preference")
+        await page.screenshot({ path: "test-results/loading-mobile.png" });
+    } finally {
+      releaseSample();
+    }
+    await expect(page.getByRole("alert")).toHaveText("Unable to open the sample capture.");
+    await expect(page.locator("#main")).toHaveAttribute("aria-busy", "false");
+    await expect(page.locator("#loading-state")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Explore sample" })).toBeEnabled();
+    await expect(page.locator("#drop-zone")).toBeVisible();
+
+    await page.locator("#report-file").setInputFiles(fixture);
+    await expect(page.locator("#filename")).toHaveText("quark-v1.qpulse");
+    await page.locator('.nav-item[data-view="Hotspots"]').click();
+    let releaseWorker!: () => void;
+    const workerGate = new Promise<void>((done) => {
+      releaseWorker = done;
+    });
+    await page.route("**/assets/worker-*.js", async (route) => {
+      await workerGate;
+      await route.continue();
+    });
+    try {
+      await page.locator("#report-file").setInputFiles({
+        name: "broken.qpulse",
+        mimeType: "application/json",
+        buffer: Buffer.from("{"),
+      });
+      await expect(page.locator("#loading-title")).toHaveText("Analyzing capture…");
+      await expect(page.locator("#report-summary")).toBeHidden();
+      await expect(page.locator("#share-report")).toBeDisabled();
+      await page.keyboard.press("/");
+      await expect(page.locator("#zone-search")).not.toBeFocused();
+    } finally {
+      releaseWorker();
+    }
+    await expect(page.locator("#loading-state")).toBeHidden();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.locator("#filename")).toHaveText("quark-v1.qpulse");
+    await expect(page.locator(".page-heading h1")).toHaveText("Hotspots");
+    await expect(page.locator("#open-report")).toBeEnabled();
+    await expect(page.locator("#share-report")).toBeEnabled();
+    await page.locator("#report-file").setInputFiles("tests/fixtures/empty-v1.qpulse");
+    await expect(page.locator("#filename")).toHaveText("empty-v1.qpulse");
+    await expect(page.getByRole("alert")).toBeHidden();
+    await expect(page.locator("#main")).toHaveAttribute("aria-busy", "false");
+    expect(
+      await page
+        .locator("#view-content")
+        .evaluate((element) => getComputedStyle(element).animationName),
+    ).toBe(reducedMotion === "reduce" ? "none" : "content-appear");
+  });
+}
+
+test("sharing shows pending work and ignores clipboard results for a replaced capture", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: () => new Promise<void>((done) => Reflect.set(window, "finishCopy", done)),
+      },
+    });
+  });
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles(fixture);
+  await expect(page.locator("#filename")).toHaveText("quark-v1.qpulse");
+  await page.evaluate(() => {
+    const read = Blob.prototype.arrayBuffer;
+    Blob.prototype.arrayBuffer = async function () {
+      Blob.prototype.arrayBuffer = read;
+      await new Promise<void>((done) => Reflect.set(window, "finishShare", done));
+      return read.call(this);
+    };
+  });
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveAttribute("aria-busy", "true");
+  await expect(page.getByRole("button", { name: "Copy link" })).toBeDisabled();
+  await expect(page.locator("#share-message")).toHaveText("Creating link…");
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => Reflect.get(window, "finishShare")());
+  await expect(page.locator("#share-dialog")).toHaveAttribute("aria-busy", "false");
+  await expect(page.getByRole("button", { name: "Share", exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Copy link" })).toBeEnabled();
+  await page.getByRole("button", { name: "Copy link" }).click();
+  await expect(page.getByRole("button", { name: "Copying…" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await page.locator("#report-file").setInputFiles("tests/fixtures/empty-v1.qpulse");
+  await expect(page.locator("#filename")).toHaveText("empty-v1.qpulse");
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Copy link" })).toBeEnabled();
+  const message = await page.locator("#share-message").textContent();
+  await page.evaluate(() => Reflect.get(window, "finishCopy")());
+  await expect(page.locator("#share-message")).toHaveText(message ?? "");
+  await expect(page.getByRole("button", { name: "Copy link" })).toBeEnabled();
+});
+
 test("security policy blocks injected scripts, external requests and base URLs", async ({
   page,
 }) => {
@@ -47,7 +182,7 @@ test("v2 network evidence is inspectable, session-filtered and shareable", async
   await page.goto("/");
   await page.locator("#report-file").setInputFiles("tests/fixtures/network-v2.qpulse");
   await page.locator('.nav-item[data-view="Network"]').click();
-  await expect(page.locator("footer")).toHaveText("Format v2Source");
+  await expect(page.locator("footer > span")).toHaveText("Format v2");
   await expect(page.locator(".metric").filter({ hasText: "Recorded packets" })).toContainText(
     "437",
   );
@@ -98,7 +233,7 @@ test("v2 network evidence is inspectable, session-filtered and shareable", async
   await expect(page.locator("#view-content")).toContainText(
     "Network telemetry is unavailable in Pulse v1",
   );
-  await expect(page.locator("footer")).toHaveText("Format v1Source");
+  await expect(page.locator("footer > span")).toHaveText("Format v1");
 });
 
 test.describe("Touch network", () => {
@@ -486,7 +621,7 @@ test("metrics, timeline, hotspot sorting, tree expansion, flame zoom, spikes and
   await page.goto("/");
   await page.locator("#report-file").setInputFiles(fixture);
   await expect(page.locator("#drop-zone")).toBeHidden();
-  await expect(page.locator("footer")).toHaveText("Format v1Source");
+  await expect(page.locator("footer > span")).toHaveText("Format v1");
   await expect(page.locator(".live-dot, .category-dot, .welcome-facts")).toHaveCount(0);
   expect(
     await page
@@ -763,6 +898,16 @@ test("production assets, sample and parser worker work under a GitHub Pages subp
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Missing test server address");
     await page.goto(`http://127.0.0.1:${address.port}/PulseViewer/`);
+    for (const [label, name] of [
+      ["License", "LICENSE"],
+      ["Notices", "NOTICE"],
+      ["Third-party", "node_modules/vite/LICENSE.md"],
+    ] as const) {
+      const href = await page.getByRole("link", { name: label, exact: true }).getAttribute("href");
+      const response = await page.request.get(new URL(href ?? "", page.url()).href);
+      expect(response.ok()).toBe(true);
+      expect(await response.text()).toBe(readFileSync(name, "utf8"));
+    }
     await page.getByRole("button", { name: "Explore sample" }).click();
     await expect(page.getByRole("status")).toHaveText("Report loaded.");
     await expect(page.locator("#filename")).toHaveText("sample-server.qpulse");

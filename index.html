@@ -22,7 +22,12 @@
     </header>
     <p id="status" class="sr-only" role="status" aria-live="polite"></p>
     <p id="error" role="alert" hidden></p>
-    <main id="main">
+    <main id="main" aria-busy="false">
+      <section id="loading-state" class="loading-state" aria-labelledby="loading-title" hidden>
+        <div class="loading-heading"><span class="loading-spinner" aria-hidden="true"></span><h1 id="loading-title">Reading report…</h1></div>
+        <p>Large captures may take a moment. Your file stays in this browser.</p>
+        <div class="loading-placeholder" aria-hidden="true"><div class="loading-metrics"><span></span><span></span><span></span><span></span><span></span></div><div class="loading-chart"></div></div>
+      </section>
       <section id="drop-zone" class="welcome" aria-labelledby="open-title">
         <div class="welcome-copy">
           <svg class="capture-file-icon" viewBox="0 0 48 56" width="48" height="56" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M28 3H8a3 3 0 0 0-3 3v44a3 3 0 0 0 3 3h32a3 3 0 0 0 3-3V18L28 3Z" /><path d="M28 3v15h15M13 35h6l3-8 5 15 4-7h5" /></svg>
@@ -36,7 +41,7 @@
       </section>
       <section id="report-summary" class="workspace" hidden aria-label="Capture analysis"></section>
     </main>
-    <footer><span>Format v1</span><a href="https://github.com/Bedrock-Phanatics/PulseViewer">Source</a></footer>
+    <footer><span>Format v1</span><nav aria-label="Project information"><a href="./LICENSE.txt">License</a><a href="./NOTICE.txt">Notices</a><a href="./THIRD_PARTY_NOTICES.txt">Third-party</a><a href="https://github.com/Bedrock-Phanatics/PulseViewer">Source</a></nav></footer>
     <dialog id="share-dialog" aria-labelledby="share-title">
       <h2 id="share-title">Share capture</h2>
       <p>The link contains the full capture. Anyone with it can view the report.</p>
