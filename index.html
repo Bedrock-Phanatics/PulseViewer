@@ -5,7 +5,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'" />
     <meta name="referrer" content="no-referrer" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0d1214" />
+    <meta name="theme-color" content="#17191c" />
     <meta name="description" content="Analyze Quark Pulse profiles locally in your browser." />
     <title>Pulse Viewer</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Crect width='28' height='28' rx='5' fill='%23171c1f'/%3E%3Cpath d='M2 15h6l4-10 5 19 4-9h5' fill='none' stroke='%23a5dac5' stroke-width='2'/%3E%3C/svg%3E" />
@@ -25,16 +25,13 @@
     <main id="main">
       <section id="drop-zone" class="welcome" aria-labelledby="open-title">
         <div class="welcome-copy">
-          <h1 id="open-title">Inspect your<br /><span>Pulse capture.</span></h1>
-          <p class="welcome-description">Find the expensive paths, inspect slow ticks, and see where your server spends its time.</p>
+          <svg class="capture-file-icon" viewBox="0 0 48 56" width="48" height="56" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M28 3H8a3 3 0 0 0-3 3v44a3 3 0 0 0 3 3h32a3 3 0 0 0 3-3V18L28 3Z" /><path d="M28 3v15h15M13 35h6l3-8 5 15 4-7h5" /></svg>
+          <h1 id="open-title">Open a Pulse capture</h1>
+          <p class="welcome-description">Inspect tick timings, call paths, and slow ticks from your Quark server.</p>
           <button id="welcome-open" class="primary large" type="button">Open a capture</button>
           <button id="sample-report" class="secondary large" type="button">Explore sample</button>
           <p class="drop-hint">or drop a <code>.qpulse</code> file anywhere</p>
-        </div>
-        <div class="welcome-visual" aria-hidden="true">
-          <div class="visual-top"><span>Capture preview</span><span class="tiny-label">Illustrative data</span></div>
-          <svg class="signal" aria-hidden="true" viewBox="0 0 500 200"><path class="signal-grid" d="M0 40h500M0 90h500M0 140h500M0 190h500M50 0v200M150 0v200M250 0v200M350 0v200M450 0v200" /><path class="signal-line" d="M0 155 20 155 30 145 40 155 65 155 80 130 90 155 125 155 140 150 150 155 175 155 195 35 210 155 240 155 255 135 270 155 300 155 310 150 330 155 350 155 365 85 380 155 420 155 435 140 450 155 500 155" /></svg>
-          <div class="visual-paths"><span><b>Tick timeline</b><small>Locate the outliers</small></span><span><b>Call paths & hotspots</b><small>Trace the work</small></span><span><b>Spike inspection</b><small>Understand the cost</small></span></div>
+          <p class="local-note">Processed locally in your browser. No upload.</p>
         </div>
       </section>
       <section id="report-summary" class="workspace" hidden aria-label="Capture analysis"></section>

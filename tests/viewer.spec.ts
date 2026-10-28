@@ -93,6 +93,7 @@ test("v2 network evidence is inspectable, session-filtered and shareable", async
   await page.locator('.nav-item[data-view="Network"]').click();
   await expect(page.locator(".network-events tbody tr")).toHaveCount(4);
   await page.locator("#report-file").setInputFiles(fixture);
+  await expect(page.locator("#filename")).toHaveText("quark-v1.qpulse");
   await page.locator('.nav-item[data-view="Network"]').click();
   await expect(page.locator("#view-content")).toContainText(
     "Network telemetry is unavailable in Pulse v1",
@@ -466,6 +467,7 @@ for (const width of [375, 768, 1440]) {
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     ).toBe(true);
+    await page.screenshot({ path: `test-results/welcome-${width}.png` });
     await page.locator("#report-file").setInputFiles(fixture);
     await expect(page.getByRole("status")).toHaveText("Report loaded.");
     expect(
@@ -622,7 +624,7 @@ test("sample capture and every analysis view remain usable on mobile", async ({ 
   await page.screenshot({ path: "test-results/welcome-mobile.png", fullPage: true });
   await page.getByRole("button", { name: "Explore sample" }).click();
   await expect(page.getByRole("status")).toHaveText("Report loaded.");
-  await expect(page.locator(".page-heading .eyebrow")).toHaveText("Sample capture");
+  await expect(page.locator(".page-heading .capture-label")).toHaveText("Sample capture");
   await expect(page.locator(".sidebar-section")).toBeHidden();
   await expect(page.locator(".sidebar > .sidebar-label")).toBeHidden();
   await expect(page.locator('#metadata dt:has-text("Platform") + dd')).toHaveText("Linux x86_64");
@@ -772,7 +774,7 @@ test("production assets, sample and parser worker work under a GitHub Pages subp
     await page.goto("about:blank");
     await page.goto(link);
     await expect(page.locator("#filename")).toHaveText("sample-server.qpulse");
-    await expect(page.locator(".page-heading .eyebrow")).toHaveText("Sample capture");
+    await expect(page.locator(".page-heading .capture-label")).toHaveText("Sample capture");
     await expect(page.locator("#timeline")).toBeVisible();
     expect(failures).toEqual([]);
   } finally {
