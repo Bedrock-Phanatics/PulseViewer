@@ -57,6 +57,7 @@ export const NETWORK_REASONS = [
   "encryption.invalid",
   "packet.bad_packet_disconnect",
   "transport.header",
+  "packet.size",
 ] as const;
 export const NETWORK_ACTIONS = ["drop_packet", "drop_batch", "reject_batch", "disconnect"] as const;
 
