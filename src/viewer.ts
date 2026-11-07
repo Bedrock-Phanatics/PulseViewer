@@ -292,7 +292,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
           const name = item.zones[child.zone] ?? "";
           const match = query && name.toLowerCase().includes(query.toLowerCase());
           rectangles.push(
-            `<g data-flame-node="${child.id}" tabindex="0" role="button" aria-label="Zoom into ${html(name)}, total ${time(child.totalNs)}, self ${time(child.selfNs)}"><title>${html(name)}\nTotal ${time(child.totalNs)}, Self ${time(child.selfNs)}, ${child.calls} calls</title><rect x="${x}" y="${depth * 34}" width="${Math.max(0, width - 1)}" height="32" class="flame-cell${match ? " flame-match" : ""}" style="--flame-color:${["#365d54", "#3d586c", "#625845", "#565177"][depth % 4]}" />${width > 32 ? `<text x="${x + 7}" y="${depth * 34 + 21}">${html(name.slice(0, Math.max(1, Math.floor((width - 14) / 7))))}</text>` : ""}</g>`,
+            `<g data-flame-node="${child.id}" tabindex="0" role="button" aria-label="Zoom into ${html(name)}, total ${time(child.totalNs)}, self ${time(child.selfNs)}"><title>${html(name)}\nTotal ${time(child.totalNs)}, Self ${time(child.selfNs)}, ${child.calls} calls</title><rect x="${x}" y="${depth * 34}" width="${Math.max(0, width - 1)}" height="32" class="flame-cell${match ? " flame-match" : ""}" style="--flame-color:${["var(--flame-1)", "var(--flame-2)", "var(--flame-3)", "var(--flame-4)"][depth % 4]}" />${width > 32 ? `<text x="${x + 7}" y="${depth * 34 + 21}">${html(name.slice(0, Math.max(1, Math.floor((width - 14) / 7))))}</text>` : ""}</g>`,
           );
           queue.push({ id: child.id, x, width, depth });
           maxDepth = Math.max(maxDepth, depth);
