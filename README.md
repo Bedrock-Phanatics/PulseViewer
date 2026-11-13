@@ -3,7 +3,7 @@
 A static browser viewer for Quark `.qpulse` captures. Reports are processed
 locally; their contents are never uploaded. No backend or account is required.
 
-Supports `quark.pulse` **v1 and v2**, gzip or UTF-8 JSON, including per-thread
+Supports `quark.pulse` **v1, v2 and v3**, gzip or UTF-8 JSON, including per-thread
 captures, `active_ticks`, and retained spikes. Both input and decompressed output are
 limited to 8 MiB, matching Quark. Nanosecond values and counters retain their
 64-bit precision.
@@ -17,9 +17,15 @@ buttons to inspect ticks. Click a point to pin its details; select **Resume hove
 to follow the pointer again. Tables render 75 rows per page. Flame views show up
 to 1,000 scopes and 16 levels, with scope details available in the table.
 
+Version 3 adds process CPU usage and main-thread PHP heap histories. CPU includes
+all server threads; 100% means one core, so peaks can exceed 100%. Summaries cover
+retained samples and skip unavailable CPU intervals. PHP heap usage excludes native
+allocations and worker heaps; its sampled peak can miss brief allocations. Resource
+history is capped at 1,200 samples, matching Quark. Older captures remain readable.
+
 **Explore sample** opens an explicitly labeled demonstration workload encoded
 by Quark, with 800 ticks, two threads and sample network decisions. It is not a
-measured server capture or real exploit activity.
+measured server capture or real exploit activity. Its resource readings are illustrative.
 
 **Share** creates a link containing the full capture. Copy it to open the same
 report on another device. Anyone with the link can read its metadata and timings.
@@ -60,8 +66,10 @@ zones, wrapped history, retained spikes, and a timestamp beyond JavaScript's
 safe integer range. Plain JSON tests decompress the same fixture. A fourth
 fixture, `network-v2.qpulse`, comes from the updated Quark encoder and covers network
 windows, session phases, signed limiter values and paired decision events.
+The v3 fixture, `resources-v3.qpulse`, uses Quark's version 3 encoder with deterministic
+CPU and heap readings, an unavailable CPU interval, and a worker without resource data.
 Regenerate fixtures and the sample with `php tools/generate-fixtures.php ../Quark`
-(requires Quark with Pulse v2 and its Composer dependencies).
+(requires Quark with Pulse v3 and its Composer dependencies).
 
 ## Static hosting
 

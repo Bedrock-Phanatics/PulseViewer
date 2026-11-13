@@ -27,6 +27,20 @@ export interface PulseSpike {
   nodes: SpikeNode[];
 }
 
+export interface ResourceSample {
+  offsetNs: bigint;
+  intervalNs: bigint;
+  cpuUserNs: bigint | null;
+  cpuSystemNs: bigint | null;
+  memoryBytes: bigint;
+  memoryAllocatedBytes: bigint;
+}
+
+export interface PulseResources {
+  samples: ResourceSample[];
+  samplesDropped: bigint;
+}
+
 export const NETWORK_PHASES = [
   "session_start",
   "login",
@@ -111,6 +125,8 @@ export interface PulseNetwork {
 
 export interface PulseThread {
   network?: PulseNetwork;
+  resources?: PulseResources | null;
+  slowTickCount?: bigint;
   name: string;
   startedNs: bigint;
   endedNs: bigint;
@@ -133,7 +149,7 @@ export interface PulseThread {
 }
 
 export interface PulseReport {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   metadata: {
     quarkVersion: string;
     phpVersion: string;

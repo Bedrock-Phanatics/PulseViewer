@@ -7,6 +7,65 @@ import { gunzipSync, gzipSync } from "node:zlib";
 
 const fixture = "tests/fixtures/quark-v1.qpulse";
 
+test("v3 resource samples show CPU intervals, PHP heap and full-capture slow ticks", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles("tests/fixtures/resources-v3.qpulse");
+  const resources = page.getByRole("region", { name: "Process resources", exact: true });
+  await expect(resources.locator(".metric").filter({ hasText: "CPU current" })).toContainText(
+    "50.0%",
+  );
+  await expect(resources.locator(".metric").filter({ hasText: "CPU average" })).toContainText(
+    "116.7%",
+  );
+  await expect(resources.locator(".metric").filter({ hasText: "CPU recent peak" })).toContainText(
+    "200.0%",
+  );
+  await expect(resources.locator(".metric").filter({ hasText: "PHP heap used" })).toContainText(
+    "76.0 MiB",
+  );
+  await expect(
+    resources.locator(".metric").filter({ hasText: "PHP heap allocated" }),
+  ).toContainText("128.0 MiB");
+  await expect(
+    resources.locator(".metric").filter({ hasText: "PHP heap sampled peak" }),
+  ).toContainText("96.0 MiB");
+  await expect(resources).toContainText("100% equals one CPU core");
+  await expect(resources).toContainText("not process RSS");
+  await expect(resources).toContainText("may miss peaks between samples");
+  await expect(page.locator("#view-content")).toContainText(
+    "2 slow ticks above the fixed 50 ms threshold in the full capture",
+  );
+  await page.getByRole("spinbutton", { name: "Target tick time in milliseconds" }).fill("70");
+  await page.getByRole("spinbutton", { name: "Target tick time in milliseconds" }).press("Tab");
+  await expect(page.locator("#view-content")).toContainText(
+    "2 slow ticks above the fixed 50 ms threshold",
+  );
+  await expect(page.locator("#resource-cpu-chart .resource-point")).toHaveCount(3);
+  expect(
+    (await page.locator("#resource-cpu-chart .chart-line").getAttribute("d"))?.match(/M/g),
+  ).toHaveLength(2);
+  await expect(page.locator("#resource-memory-chart")).toBeVisible();
+  for (const width of [1440, 375]) {
+    await page.setViewportSize({ width, height: 1000 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: `test-results/resources-${width}.png`, fullPage: true });
+  }
+  await page.getByRole("combobox", { name: "Thread", exact: true }).selectOption("1");
+  await expect(page.locator("#view-content")).toContainText(
+    "Process resource telemetry is unavailable on this worker thread",
+  );
+  await expect(page.locator("#resource-cpu-chart")).toHaveCount(0);
+  await page.locator("#report-file").setInputFiles(fixture);
+  await expect(page.locator("#view-content")).toContainText(
+    "Resource telemetry is unavailable in Pulse v1",
+  );
+});
+
 for (const reducedMotion of ["no-preference", "reduce"] as const) {
   test(`loading feedback, recovery and motion preference: ${reducedMotion}`, async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 900 });

@@ -5,6 +5,7 @@ import {
   type PulseNetwork,
   type PulseNode,
   type PulseReport,
+  type PulseResources,
   type PulseThread,
   type PulseTick,
 } from "../model/report.ts";
@@ -59,6 +60,55 @@ function row(value: unknown, size: number): unknown[] {
 function choice<T extends string>(value: unknown, values: readonly T[]): T {
   requireValid(typeof value === "string" && values.includes(value as T), "Invalid network code.");
   return value as T;
+}
+
+function resources(
+  value: unknown,
+  length: bigint,
+  charge: (count: number) => void,
+): PulseResources {
+  const raw = object(value, 2);
+  const samplesDropped = integer(raw.samples_dropped);
+  const samples = list(raw.samples, 1200);
+  requireValid(
+    samples.length > 0 && (samplesDropped === 0n || samples.length === 1200),
+    "Invalid resource history length.",
+  );
+  charge(samples.length);
+  let previous = 0n;
+  return {
+    samplesDropped,
+    samples: samples.map((value, index) => {
+      const values = row(value, 6);
+      const offsetNs = integer(values[0], previous, length);
+      const intervalNs = integer(values[1], 0n, offsetNs);
+      requireValid(
+        index === 0
+          ? samplesDropped === 0n
+            ? offsetNs === 0n && intervalNs === 0n
+            : intervalNs > 0n
+          : intervalNs > 0n && offsetNs - previous === intervalNs,
+        "Invalid resource sample ordering.",
+      );
+      const cpuUserNs = values[2] === null ? null : integer(values[2]);
+      const cpuSystemNs = values[3] === null ? null : integer(values[3]);
+      requireValid(
+        (cpuUserNs === null) === (cpuSystemNs === null) &&
+          (intervalNs > 0n || ((cpuUserNs ?? 0n) === 0n && (cpuSystemNs ?? 0n) === 0n)),
+        "Invalid CPU sample counters.",
+      );
+      const memoryAllocatedBytes = integer(values[5]);
+      previous = offsetNs;
+      return {
+        offsetNs,
+        intervalNs,
+        cpuUserNs,
+        cpuSystemNs,
+        memoryBytes: integer(values[4], 0n, memoryAllocatedBytes),
+        memoryAllocatedBytes,
+      };
+    }),
+  };
 }
 
 function network(
@@ -292,9 +342,9 @@ function normalize(data: unknown): PulseReport {
   const report = object(data, 5);
   requireValid(
     report.format === "quark.pulse" &&
-      (report.version === 1n || report.version === 2n) &&
+      (report.version === 1n || report.version === 2n || report.version === 3n) &&
       report.time_unit === "ns",
-    "Unsupported Pulse format or version. Expected quark.pulse v1 or v2 in nanoseconds.",
+    "Unsupported Pulse format or version. Expected quark.pulse v1, v2 or v3 in nanoseconds.",
   );
   let textBudget = MAX_BYTES / 2;
   let rowBudget = 131_072;
@@ -319,7 +369,7 @@ function normalize(data: unknown): PulseReport {
   }
   const metadata = object(report.metadata, 7);
   const result: PulseReport = {
-    version: report.version === 1n ? 1 : 2,
+    version: report.version === 1n ? 1 : report.version === 2n ? 2 : 3,
     metadata: {
       quarkVersion: text(metadata.quark_version, 4096),
       phpVersion: text(metadata.php_version, 4096),
@@ -339,7 +389,7 @@ function normalize(data: unknown): PulseReport {
   };
   const names = new Set<string>();
   for (const value of list(report.threads, 128)) {
-    const raw = object(value, result.version === 1 ? 20 : 21);
+    const raw = object(value, result.version === 1 ? 20 : result.version === 2 ? 21 : 23);
     const name = text(raw.thread, 256);
     requireValid(!names.has(name), "Duplicate thread name.");
     names.add(name);
@@ -492,8 +542,19 @@ function normalize(data: unknown): PulseReport {
       droppedScopes: integer(raw.dropped_scopes),
       unbalancedTicks: integer(raw.unbalanced_ticks),
     };
-    if (result.version === 2)
+    if (result.version >= 2)
       thread.network = network(raw.network, endedNs - startedNs, tickCount, raw.recording, charge);
+    if (result.version === 3) {
+      const retainedSlow = BigInt(ticks.filter((tick) => tick.durationNs > 50_000_000n).length);
+      thread.slowTickCount = integer(
+        raw.slow_tick_count,
+        retainedSlow,
+        tickCount - BigInt(ticks.length) + retainedSlow,
+      );
+      requireValid(Object.hasOwn(raw, "resources"), "Missing resource data.");
+      thread.resources =
+        raw.resources === null ? null : resources(raw.resources, endedNs - startedNs, charge);
+    }
     result.threads.push(thread);
   }
   return result;

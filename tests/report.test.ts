@@ -4,7 +4,15 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { PulseReport } from "../src/model/report.ts";
-import { analyze, compare, elapsed, networkActivity, percent, treeRows } from "../src/analysis.ts";
+import {
+  analyze,
+  compare,
+  elapsed,
+  networkActivity,
+  percent,
+  resourceActivity,
+  treeRows,
+} from "../src/analysis.ts";
 import { parseInWorker } from "../src/parser/load.ts";
 import { MAX_BYTES, parseReport, ReportError } from "../src/parser/qpulse.ts";
 import { createShareLink, MAX_SHARE_BYTES, readShareLink } from "../src/share.ts";
@@ -13,6 +21,147 @@ const gzip = readFileSync(new URL("./fixtures/quark-v1.qpulse", import.meta.url)
 const fixture = gunzipSync(gzip).toString("utf8");
 const networkGzip = readFileSync(new URL("./fixtures/network-v2.qpulse", import.meta.url));
 const networkFixture = gunzipSync(networkGzip).toString("utf8");
+const resourceGzip = readFileSync(new URL("./fixtures/resources-v3.qpulse", import.meta.url));
+const resourceFixture = gunzipSync(resourceGzip).toString("utf8");
+
+test("Quark v3 preserves resource intervals, unavailable CPU, worker coverage and session slow ticks", async () => {
+  const report = await parseReport(buffer(resourceGzip));
+  assert.deepEqual(await parseReport(buffer(resourceFixture)), report);
+  assert.equal(report.version, 3);
+  const main = report.threads[0];
+  assert.ok(main?.resources);
+  assert.equal(main.startedNs, 9_007_199_254_740_993n);
+  assert.equal(main.slowTickCount, 2n);
+  assert.equal(main.resources.samples.length, 5);
+  assert.equal(main.resources.samples[2]?.cpuUserNs, 1_800_000_000n);
+  assert.equal(main.resources.samples[3]?.cpuUserNs, null);
+  assert.equal(main.resources.samples[3]?.cpuSystemNs, null);
+  assert.equal(main.resources.samples[4]?.memoryBytes, 76n * 1_048_576n);
+  assert.equal(report.threads[1]?.resources, null);
+  assert.equal((await parseReport(buffer(gzip))).threads[0]?.resources, undefined);
+  const shared = readShareLink(
+    new URL(
+      await createShareLink(
+        new File([buffer(resourceGzip)], "resources.qpulse"),
+        "https://example.com/",
+        false,
+      ),
+    ).hash,
+  );
+  assert.ok(shared);
+  assert.deepEqual(await parseReport(await shared.file.arrayBuffer()), report);
+});
+
+test("v3 resource validation rejects missing fields, bad ordering, CPU pairs and memory bounds", async () => {
+  for (const resources of [
+    undefined,
+    {},
+    [],
+    { samples: [], samples_dropped: 0n },
+    { samples: [[0n, 0n, null, null, 1n, 2n]], samples_dropped: -1n },
+    { samples: [[0n, 0n, null, null, 1n, 2n]], samples_dropped: 1n },
+    { samples: [[1n, 0n, null, null, 1n, 2n]], samples_dropped: 0n },
+    { samples: [[0n, 0n, 1n, 0n, 1n, 2n]], samples_dropped: 0n },
+    { samples: [[0n, 0n, null, 0n, 1n, 2n]], samples_dropped: 0n },
+    { samples: [[0n, 0n, -1n, 0n, 1n, 2n]], samples_dropped: 0n },
+    { samples: [[0n, 0n, null, null, 3n, 2n]], samples_dropped: 0n },
+    {
+      samples: [
+        [0n, 0n, null, null, 1n, 2n],
+        [1n, 0n, 0n, 0n, 1n, 2n],
+      ],
+      samples_dropped: 0n,
+    },
+    {
+      samples: [
+        [0n, 0n, null, null, 1n, 2n],
+        [2n, 1n, 0n, 0n, 1n, 2n],
+      ],
+      samples_dropped: 0n,
+    },
+    {
+      samples: [
+        [0n, 0n, null, null, 1n, 2n],
+        [4_000_000_001n, 4_000_000_001n, 0n, 0n, 1n, 2n],
+      ],
+      samples_dropped: 0n,
+    },
+    { samples: Array(1201).fill([0n, 0n, null, null, 1n, 2n]), samples_dropped: 0n },
+  ]) {
+    await rejects(
+      changed((_report, thread) => {
+        if (resources === undefined) delete thread.resources;
+        else thread.resources = resources;
+      }, resourceFixture),
+    );
+  }
+  for (const slowCount of [-1n, 0n, 4n, undefined]) {
+    await rejects(
+      changed((_report, thread) => {
+        if (slowCount === undefined) delete thread.slow_tick_count;
+        else thread.slow_tick_count = slowCount;
+      }, resourceFixture),
+    );
+  }
+  await rejects(resourceFixture.replace('"version":3', '"version":4'));
+});
+
+test("resource summaries preserve multicore peaks, weight intervals and exclude unavailable CPU", async () => {
+  const report = await parseReport(buffer(resourceGzip));
+  const resources = report.threads[0]?.resources;
+  assert.ok(resources);
+  const activity = resourceActivity(resources);
+  assert.equal(activity.current?.cpu, 50);
+  assert.ok(Math.abs((activity.cpuAverage ?? 0) - 350 / 3) < 0.00001);
+  assert.equal(activity.cpuPeak, 200);
+  assert.equal(activity.memoryPeak, 96n * 1_048_576n);
+  const first = activity.samples[1];
+  const second = activity.samples[2];
+  assert.ok(first && second);
+  const unequal = resourceActivity({
+    samplesDropped: 0n,
+    samples: [
+      {
+        ...first,
+        offsetNs: 3_000_000_000n,
+        intervalNs: 3_000_000_000n,
+        cpuUserNs: 3_000_000_000n,
+        cpuSystemNs: 0n,
+      },
+      { ...second, offsetNs: 4_000_000_000n },
+    ],
+  });
+  assert.equal(unequal.cpuAverage, 125);
+  const missing = resourceActivity({
+    ...resources,
+    samples: resources.samples.map((sample) => ({ ...sample, cpuUserNs: null, cpuSystemNs: null })),
+  });
+  assert.equal(missing.current?.cpu, null);
+  assert.equal(missing.cpuAverage, null);
+  assert.equal(missing.cpuPeak, null);
+  assert.equal(missing.memoryPeak, activity.memoryPeak);
+});
+
+test("v3 wrapped resource history is bounded and shares the global row budget", async () => {
+  const full = changed((_report, thread) => {
+    thread.resources = {
+      samples_dropped: 1n,
+      samples: Array.from({ length: 1200 }, (_, i) => [BigInt(i + 1), 1n, 0n, 0n, 1n, 2n]),
+    };
+  }, resourceFixture);
+  const report = await parseReport(buffer(full));
+  assert.equal(report.threads[0]?.resources?.samplesDropped, 1n);
+  assert.equal(report.threads[0]?.resources?.samples.length, 1200);
+  await rejects(
+    changed((report, thread) => {
+      report.threads = Array.from({ length: 110 }, (_, i) => ({
+        ...thread,
+        thread: `thread-${i}`,
+      }));
+    }, full),
+    /row limit/,
+  );
+});
 
 test("Quark v2 telemetry preserves signed evidence and retained bucket counts without double-counting events as attacks", async () => {
   const report = await parseReport(buffer(networkGzip));

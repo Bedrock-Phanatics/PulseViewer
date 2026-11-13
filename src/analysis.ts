@@ -1,4 +1,31 @@
-import type { PulseNetwork, PulseNode, PulseThread } from "./model/report.ts";
+import type { PulseNetwork, PulseNode, PulseResources, PulseThread } from "./model/report.ts";
+
+export function resourceActivity(resources: PulseResources) {
+  let cpuNs = 0n;
+  let intervalNs = 0n;
+  let cpuPeak: number | null = null;
+  let memoryPeak = 0n;
+  const samples = resources.samples.map((sample) => {
+    const cpu =
+      sample.intervalNs > 0n && sample.cpuUserNs !== null && sample.cpuSystemNs !== null
+        ? (Number(sample.cpuUserNs + sample.cpuSystemNs) / Number(sample.intervalNs)) * 100
+        : null;
+    if (cpu !== null) {
+      cpuNs += (sample.cpuUserNs ?? 0n) + (sample.cpuSystemNs ?? 0n);
+      intervalNs += sample.intervalNs;
+      cpuPeak = Math.max(cpuPeak ?? 0, cpu);
+    }
+    if (sample.memoryBytes > memoryPeak) memoryPeak = sample.memoryBytes;
+    return { ...sample, cpu };
+  });
+  return {
+    samples,
+    current: samples.at(-1),
+    cpuAverage: intervalNs > 0n ? (Number(cpuNs) / Number(intervalNs)) * 100 : null,
+    cpuPeak,
+    memoryPeak,
+  };
+}
 
 export function networkActivity(network: PulseNetwork, session: number | null | "all" = "all") {
   const buckets = new Map<

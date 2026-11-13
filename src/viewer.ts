@@ -4,6 +4,7 @@ import {
   elapsed,
   networkActivity,
   percent,
+  resourceActivity,
   time,
   treeRows,
   type SortKey,
@@ -52,8 +53,18 @@ function tickLabel(tick: PulseTick): string {
   return `Tick #${tick.id}, ${(Number(tick.offsetNs) / 1e9).toFixed(3)} seconds into capture, ${time(tick.durationNs)}`;
 }
 
+function cpuPercent(value: number | null | undefined): string {
+  return value == null ? "—" : `${value.toFixed(1)}%`;
+}
+
+function memory(value: bigint): string {
+  const mib = Number(value) / 1_048_576;
+  return mib >= 1024 ? `${(mib / 1024).toFixed(1)} GiB` : `${mib.toFixed(1)} MiB`;
+}
+
 export function showReport(host: HTMLElement, report: PulseReport, sample: boolean): void {
   const analyses = report.threads.map(analyze);
+  const resourceAnalyses = new Map<PulseThread, ReturnType<typeof resourceActivity>>();
   let threadIndex = Math.max(
     0,
     report.threads.findIndex((thread) => thread.tickCount > 0n),
@@ -157,7 +168,82 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
           `<button class="spike-row" data-spike="${spike.tick.id}"><span>Tick <b>#${spike.tick.id}</b><small>+${(Number(spike.tick.offsetNs) / 1e9).toFixed(2)} s into capture</small></span><strong>${time(spike.tick.durationNs)}</strong></button>`,
       )
       .join("");
-    return `<div class="metrics">${metric("Capture duration", elapsed(item), item.recording ? "Unfinished snapshot" : "Thread capture span")}${metric("Average tick", time(average), `${item.tickCount.toLocaleString()} ticks in full capture`, true)}${metric("P95 tick", time(data.p95), "95th percentile of history")}${metric("P99 tick", time(data.p99), "99th percentile of history")}${metric("Maximum tick", time(item.tickCount ? item.tickMaxNs : undefined), "Full capture")}</div>${panel("Tick timeline", `${item.ticks.length.toLocaleString()} of ${item.tickCount.toLocaleString()} ticks retained. ${slow} exceed the ${budgetMs} ms target.`, `${timeline(item)}<div class="chart-footer"><span><i class="legend-line"></i> Tick duration <i class="legend-budget"></i> Target</span><label>Target tick time <input id="budget" type="number" min="1" max="60000" step="1" value="${budgetMs}" aria-label="Target tick time in milliseconds" /> ms</label></div><div id="tick-detail" class="tick-detail"></div>`)}<div class="overview-grid">${panel("Self-time hotspots", "Time spent in each zone, excluding its children", bars || empty("No completed scopes on this thread."), '<button class="text-button" data-view="Hotspots">View all</button>')}${panel("Slowest retained spikes", `Recorded above ${time(item.spikeThresholdNs)}. ${item.spikesDropped.toLocaleString()} spikes dropped.`, spikeList || empty(item.spikeThresholdNs === 0n ? "Spike recording was disabled for this capture." : "No retained spikes on this thread."), '<button class="text-button" data-view="Spikes">Inspect</button>')}</div><div class="capture-footnote"><span>${item.nodes.length.toLocaleString()} call paths, ${data.hotspots.length.toLocaleString()} zones, ${report.threads.length} threads</span><details><summary>How timings are calculated</summary><p>Total time includes child scopes and can overlap. Self time excludes children. P95 and P99 show the durations at or below which 95% and 99% of retained ticks fall, using nearest rank. Averages and maxima cover the full capture.</p></details></div>`;
+    return `<div class="metrics">${metric("Capture duration", elapsed(item), item.recording ? "Unfinished snapshot" : "Thread capture span")}${metric("Average tick", time(average), `${item.tickCount.toLocaleString()} ticks in full capture`, true)}${metric("P95 tick", time(data.p95), "95th percentile of history")}${metric("P99 tick", time(data.p99), "99th percentile of history")}${metric("Maximum tick", time(item.tickCount ? item.tickMaxNs : undefined), "Full capture")}</div>${panel("Tick timeline", `${item.ticks.length.toLocaleString()} of ${item.tickCount.toLocaleString()} ticks retained. ${slow} exceed the ${budgetMs} ms target.`, `${timeline(item)}<div class="chart-footer"><span><i class="legend-line"></i> Tick duration <i class="legend-budget"></i> Target</span><label>Target tick time <input id="budget" type="number" min="1" max="60000" step="1" value="${budgetMs}" aria-label="Target tick time in milliseconds" /> ms</label></div><div id="tick-detail" class="tick-detail"></div>`)}${item.slowTickCount !== undefined ? `<p class="view-note">${item.slowTickCount.toLocaleString()} slow ticks above the fixed 50 ms threshold in the full capture. The target above applies only to retained tick history.</p>` : ""}${resourceView(item)}<div class="overview-grid">${panel("Self-time hotspots", "Time spent in each zone, excluding its children", bars || empty("No completed scopes on this thread."), '<button class="text-button" data-view="Hotspots">View all</button>')}${panel("Slowest retained spikes", `Recorded above ${time(item.spikeThresholdNs)}. ${item.spikesDropped.toLocaleString()} spikes dropped.`, spikeList || empty(item.spikeThresholdNs === 0n ? "Spike recording was disabled for this capture." : "No retained spikes on this thread."), '<button class="text-button" data-view="Spikes">Inspect</button>')}</div><div class="capture-footnote"><span>${item.nodes.length.toLocaleString()} call paths, ${data.hotspots.length.toLocaleString()} zones, ${report.threads.length} threads</span><details><summary>How timings are calculated</summary><p>Total time includes child scopes and can overlap. Self time excludes children. P95 and P99 show the durations at or below which 95% and 99% of retained ticks fall, using nearest rank. Averages and maxima cover the full capture.</p></details></div>`;
+  }
+  function resourceView(item: PulseThread): string {
+    if (!item.resources)
+      return `<p class="view-note resource-unavailable">${report.version < 3 ? `Resource telemetry is unavailable in Pulse v${report.version}. Open a v3 capture to inspect CPU and PHP heap samples.` : "Process resource telemetry is unavailable on this worker thread. Select the main thread to inspect CPU and PHP heap samples."}</p>`;
+    let data = resourceAnalyses.get(item);
+    if (!data) {
+      data = resourceActivity(item.resources);
+      resourceAnalyses.set(item, data);
+    }
+    const current = data.current;
+    if (!current) return empty("No resource samples were retained on this thread.");
+    return `<section class="resource-section" aria-label="Process resources"><div class="resource-heading"><h2>Process resources</h2><p>${data.samples.length.toLocaleString()} samples retained; ${item.resources.samplesDropped.toLocaleString()} samples dropped. Missing history is not reconstructed.</p></div><div class="metrics resource-metrics">${metric("CPU current", cpuPercent(current.cpu), "Latest sampled interval")}${metric("CPU average", cpuPercent(data.cpuAverage), "Weighted by valid retained intervals")}${metric("CPU recent peak", cpuPercent(data.cpuPeak), "Highest retained interval")}${metric("PHP heap used", memory(current.memoryBytes), "Latest main-thread sample")}${metric("PHP heap allocated", memory(current.memoryAllocatedBytes), "Latest main-thread sample")}${metric("PHP heap sampled peak", memory(data.memoryPeak), "Highest retained used-heap sample")}</div><div class="overview-grid">${panel("CPU history", "100% equals one CPU core; process usage may exceed 100%.", resourceChart(item, data, "cpu"))}${panel("PHP heap history", "Used heap and allocated heap on the PHP main thread; these are not process RSS.", resourceChart(item, data, "memory"))}</div><p class="view-note">CPU gaps mean a measurement was unavailable, including the initial zero-length interval. Averages exclude those intervals. The sampled heap peak may miss peaks between samples or in dropped history.</p></section>`;
+  }
+  function resourceChart(
+    item: PulseThread,
+    data: ReturnType<typeof resourceActivity>,
+    kind: "cpu" | "memory",
+  ): string {
+    const span = Number(item.endedNs - item.startedNs) || 1;
+    let max = kind === "cpu" ? Math.max(100, data.cpuPeak ?? 0) : 1;
+    if (kind === "memory")
+      for (const sample of data.samples)
+        max = Math.max(
+          max,
+          Number(sample.memoryBytes) / 1_048_576,
+          Number(sample.memoryAllocatedBytes) / 1_048_576,
+        );
+    const x = (offset: bigint) => 55 + (Number(offset) / span) * 910;
+    const y = (value: number) => 220 - (value / max) * 190;
+    let line = "";
+    let allocated = "";
+    let connected = false;
+    let previous = 0n;
+    for (const sample of data.samples) {
+      const value = kind === "cpu" ? sample.cpu : Number(sample.memoryBytes) / 1_048_576;
+      if (value === null) connected = false;
+      else {
+        if (kind === "cpu" && sample.offsetNs - previous > sample.intervalNs) connected = false;
+        line += `${connected ? "L" : "M"}${x(sample.offsetNs).toFixed(2)} ${y(value).toFixed(2)} `;
+        connected = true;
+      }
+      if (kind === "memory")
+        allocated += `${allocated ? "L" : "M"}${x(sample.offsetNs).toFixed(2)} ${y(Number(sample.memoryAllocatedBytes) / 1_048_576).toFixed(2)} `;
+      previous = sample.offsetNs;
+    }
+    const grid = Array.from(
+      { length: 5 },
+      (_, i) =>
+        `<line x1="55" x2="965" y1="${220 - i * 47.5}" y2="${220 - i * 47.5}" class="chart-grid" />`,
+    ).join("");
+    const yLabels = Array.from(
+      { length: 5 },
+      (_, i) =>
+        `<span style="top:${((220 - i * 47.5) / 260) * 100}%">${((max * i) / 4).toFixed(0)}</span>`,
+    ).join("");
+    const xLabels = Array.from(
+      { length: 5 },
+      (_, i) =>
+        `<span style="left:${5.5 + i * 22.75}%" class="${i === 0 ? "axis-first" : i === 4 ? "axis-last" : ""}">${((span * i) / 4e9).toFixed(1)} s</span>`,
+    ).join("");
+    const label =
+      kind === "cpu"
+        ? "Process CPU usage in percent over capture time"
+        : "PHP used and allocated heap in MiB over capture time";
+    const points =
+      kind === "cpu"
+        ? data.samples
+            .filter((sample) => sample.cpu !== null)
+            .map(
+              (sample) =>
+                `<circle cx="${x(sample.offsetNs).toFixed(2)}" cy="${y(sample.cpu ?? 0).toFixed(2)}" r="2.5" class="resource-point"><title>${cpuPercent(sample.cpu)} at ${(Number(sample.offsetNs) / 1e9).toFixed(2)} s</title></circle>`,
+            )
+            .join("")
+        : "";
+    return `<div class="timeline-wrap resource-chart"><div class="timeline-plot"><div class="axis-y" aria-hidden="true"><small>${kind === "cpu" ? "%" : "MiB"}</small>${yLabels}</div><div class="axis-x" aria-hidden="true">${xLabels}</div><svg id="resource-${kind}-chart" viewBox="0 0 1000 260" role="img" aria-label="${label}" preserveAspectRatio="none">${grid}<path d="${line}" class="chart-line" />${points}${kind === "memory" ? `<path d="${allocated}" class="budget-line resource-allocated" />` : ""}</svg></div>${kind === "memory" ? '<p class="view-note"><i class="legend-line"></i> Used <i class="legend-budget"></i> Allocated</p>' : ""}</div>`;
   }
   function timeline(item: PulseThread): string {
     if (!item.ticks.length) return empty("No tick history was recorded on this thread.");

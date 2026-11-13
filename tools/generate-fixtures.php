@@ -12,10 +12,13 @@ foreach(["src/pulse/PulseZone.php", "src/pulse/internal/PulseNode.php", "src/pul
     require_once $root . "/" . $file;
 }
 
-function legacy(PulseReport $report) : string{
+function legacy(PulseReport $report, int $version = 1) : string{
     $data = $report->getData();
-    $data["version"] = 1;
-    foreach($data["threads"] as &$thread) unset($thread["network"]);
+    $data["version"] = $version;
+    foreach($data["threads"] as &$thread){
+        unset($thread["resources"], $thread["slow_tick_count"]);
+        if($version === 1) unset($thread["network"]);
+    }
     unset($thread);
     return PulseReport::decode(json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE))->encode(true);
 }
@@ -56,6 +59,17 @@ $report = PulseReport::create([$main->capture(), $worker->capture()], $metadata)
 $directory = __DIR__ . "/../tests/fixtures";
 if(!is_dir($directory)) mkdir($directory, 0777, true);
 file_put_contents($directory . "/quark-v1.qpulse", legacy($report));
+$resourceMain = $main->capture();
+$resourceMain["ended_ns"] = $resourceMain["started_ns"] + 4000000000;
+$resourceMain["network"] = PulseNetwork::emptyCapture(4000000000);
+$resourceMain["resources"] = ["samples_dropped" => 0, "samples" => [
+    [0, 0, null, null, 64 * 1048576, 128 * 1048576],
+    [1000000000, 1000000000, 800000000, 200000000, 80 * 1048576, 128 * 1048576],
+    [2000000000, 1000000000, 1800000000, 200000000, 96 * 1048576, 128 * 1048576],
+    [3000000000, 1000000000, null, null, 72 * 1048576, 128 * 1048576],
+    [4000000000, 1000000000, 400000000, 100000000, 76 * 1048576, 128 * 1048576]
+]];
+file_put_contents($directory . "/resources-v3.qpulse", PulseReport::create([$resourceMain, $worker->capture()], $metadata)->encode(true));
 file_put_contents($directory . "/empty-v1.qpulse", legacy(PulseReport::create([], $metadata)));
 $live = new PulseContext();
 $zone = $live->zone("recursive")->getId();
@@ -98,7 +112,7 @@ for($i = 0; $i < 8; ++$i){
     if($i === 7) $network->event(1, null, "in_game", "decompression.limit", "reject_batch", observed: 8388609, limit: 8388608, now: $now + 100000000);
 }
 $networkContext->stop(8750000000);
-file_put_contents($directory . "/network-v2.qpulse", PulseReport::create([$networkContext->capture()], $metadata)->encode(true));
+file_put_contents($directory . "/network-v2.qpulse", legacy(PulseReport::create([$networkContext->capture()], $metadata), 2));
 $sample = new PulseContext(maxTicks: 600);
 $names = ["server.tick", "world.tick", "world.entity.tick", "world.block.tick", "plugin.SkyWars", "event.SkyWars.PlayerMoveEvent", "network.process", "network.packet.batch", "scheduler.heartbeat"];
 $zones = array_map(fn(string $name) => $sample->zone($name)->getId(), $names);
@@ -167,5 +181,17 @@ $sampleMetadata["platform"] = "Linux x86_64";
 $sampleMetadata["worlds"] = ["Lobby", "SkyWars-01"];
 $public = __DIR__ . "/../public";
 if(!is_dir($public)) mkdir($public, 0777, true);
-file_put_contents($public . "/sample.qpulse", PulseReport::create([$sample->capture(), $sampleWorker->capture()], $sampleMetadata)->encode(true));
-echo "Generated four fixtures and the sample with Quark's encoder\n";
+$sampleMain = $sample->capture();
+// The public sample illustrates resource variation; these are not host measurements.
+$sampleMain["resources"] = ["samples_dropped" => 0, "samples" => [[0, 0, null, null, 64 * 1048576, 128 * 1048576]]];
+$length = $sampleMain["ended_ns"] - $sampleMain["started_ns"];
+$previous = 0;
+for($offset = 1000000000; $previous < $length; $offset += 1000000000){
+    $end = min($offset, $length);
+    $interval = $end - $previous;
+    $spike = intdiv($offset, 1000000000) % 9 === 0;
+    $sampleMain["resources"]["samples"][] = [$end, $interval, intdiv($interval * ($spike ? 150 : 45), 100), intdiv($interval, 10), ($spike ? 96 : 72) * 1048576, 128 * 1048576];
+    $previous = $end;
+}
+file_put_contents($public . "/sample.qpulse", PulseReport::create([$sampleMain, $sampleWorker->capture()], $sampleMetadata)->encode(true));
+echo "Generated five fixtures and the sample with Quark's encoder\n";
