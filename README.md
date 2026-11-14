@@ -19,9 +19,11 @@ to 1,000 scopes and 16 levels, with scope details available in the table.
 
 Version 3 adds process CPU usage and main-thread PHP heap histories. CPU includes
 all server threads; 100% means one core, so peaks can exceed 100%. Summaries cover
-retained samples and skip unavailable CPU intervals. PHP heap usage excludes native
-allocations and worker heaps; its sampled peak can miss brief allocations. Resource
-history is capped at 1,200 samples, matching Quark. Older captures remain readable.
+retained samples and skip unavailable or sub-second CPU intervals, avoiding false
+spikes from coarse system counters. Charts use the retained time range after history
+wraps. PHP heap usage excludes native allocations and worker heaps; its sampled
+peak can miss brief allocations. Resource history is capped at 1,200 samples,
+matching Quark. Older captures remain readable.
 
 **Explore sample** opens an explicitly labeled demonstration workload encoded
 by Quark, with 800 ticks, two threads and sample network decisions. It is not a

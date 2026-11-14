@@ -190,7 +190,7 @@ for($offset = 1000000000; $previous < $length; $offset += 1000000000){
     $end = min($offset, $length);
     $interval = $end - $previous;
     $spike = intdiv($offset, 1000000000) % 9 === 0;
-    $sampleMain["resources"]["samples"][] = [$end, $interval, intdiv($interval * ($spike ? 150 : 45), 100), intdiv($interval, 10), ($spike ? 96 : 72) * 1048576, 128 * 1048576];
+    $sampleMain["resources"]["samples"][] = [$end, $interval, $interval < 1000000000 ? null : intdiv($interval * ($spike ? 150 : 45), 100), $interval < 1000000000 ? null : intdiv($interval, 10), ($spike ? 96 : 72) * 1048576, 128 * 1048576];
     $previous = $end;
 }
 file_put_contents($public . "/sample.qpulse", PulseReport::create([$sampleMain, $sampleWorker->capture()], $sampleMetadata)->encode(true));

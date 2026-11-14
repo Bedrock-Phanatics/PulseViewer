@@ -180,14 +180,15 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     }
     const current = data.current;
     if (!current) return empty("No resource samples were retained on this thread.");
-    return `<section class="resource-section" aria-label="Process resources"><div class="resource-heading"><h2>Process resources</h2><p>${data.samples.length.toLocaleString()} samples retained; ${item.resources.samplesDropped.toLocaleString()} samples dropped. Missing history is not reconstructed.</p></div><div class="metrics resource-metrics">${metric("CPU current", cpuPercent(current.cpu), "Latest sampled interval")}${metric("CPU average", cpuPercent(data.cpuAverage), "Weighted by valid retained intervals")}${metric("CPU recent peak", cpuPercent(data.cpuPeak), "Highest retained interval")}${metric("PHP heap used", memory(current.memoryBytes), "Latest main-thread sample")}${metric("PHP heap allocated", memory(current.memoryAllocatedBytes), "Latest main-thread sample")}${metric("PHP heap sampled peak", memory(data.memoryPeak), "Highest retained used-heap sample")}</div><div class="overview-grid">${panel("CPU history", "100% equals one CPU core; process usage may exceed 100%.", resourceChart(item, data, "cpu"))}${panel("PHP heap history", "Used heap and allocated heap on the PHP main thread; these are not process RSS.", resourceChart(item, data, "memory"))}</div><p class="view-note">CPU gaps mean a measurement was unavailable, including the initial zero-length interval. Averages exclude those intervals. The sampled heap peak may miss peaks between samples or in dropped history.</p></section>`;
+    return `<section class="resource-section" aria-label="Process resources"><div class="resource-heading"><h2>Process resources</h2><p>${data.samples.length.toLocaleString()} samples retained; ${item.resources.samplesDropped.toLocaleString()} samples dropped. Missing history is not reconstructed.</p></div><div class="metrics resource-metrics">${metric("CPU current", cpuPercent(current.cpu), "Latest sampled interval")}${metric("CPU average", cpuPercent(data.cpuAverage), "Weighted by valid retained intervals")}${metric("CPU recent peak", cpuPercent(data.cpuPeak), "Highest retained interval")}${metric("PHP heap used", memory(current.memoryBytes), "Latest main-thread sample")}${metric("PHP heap allocated", memory(current.memoryAllocatedBytes), "Latest main-thread sample")}${metric("PHP heap sampled peak", memory(data.memoryPeak), "Highest retained used-heap sample")}</div><div class="overview-grid">${panel("CPU history", "100% equals one CPU core; process usage may exceed 100%.", resourceChart(data, "cpu"))}${panel("PHP heap history", "Used heap and allocated heap on the PHP main thread; these are not process RSS.", resourceChart(data, "memory"))}</div><p class="view-note">CPU gaps mean a measurement was unavailable, including intervals shorter than one second. Averages exclude those intervals. The sampled heap peak may miss peaks between samples or in dropped history.</p></section>`;
   }
   function resourceChart(
-    item: PulseThread,
     data: ReturnType<typeof resourceActivity>,
     kind: "cpu" | "memory",
   ): string {
-    const span = Number(item.endedNs - item.startedNs) || 1;
+    const first = data.samples[0]?.offsetNs ?? 0n;
+    const last = data.samples.at(-1)?.offsetNs ?? first;
+    const span = Number(last - first) || 1;
     let max = kind === "cpu" ? Math.max(100, data.cpuPeak ?? 0) : 1;
     if (kind === "memory")
       for (const sample of data.samples)
@@ -196,7 +197,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
           Number(sample.memoryBytes) / 1_048_576,
           Number(sample.memoryAllocatedBytes) / 1_048_576,
         );
-    const x = (offset: bigint) => 55 + (Number(offset) / span) * 910;
+    const x = (offset: bigint) => 55 + (Number(offset - first) / span) * 910;
     const y = (value: number) => 220 - (value / max) * 190;
     let line = "";
     let allocated = "";
@@ -224,11 +225,10 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
       (_, i) =>
         `<span style="top:${((220 - i * 47.5) / 260) * 100}%">${((max * i) / 4).toFixed(0)}</span>`,
     ).join("");
-    const xLabels = Array.from(
-      { length: 5 },
-      (_, i) =>
-        `<span style="left:${5.5 + i * 22.75}%" class="${i === 0 ? "axis-first" : i === 4 ? "axis-last" : ""}">${((span * i) / 4e9).toFixed(1)} s</span>`,
-    ).join("");
+    const xLabels = Array.from({ length: 5 }, (_, i) => {
+      const seconds = (Number(first) + (span * i) / 4) / 1e9;
+      return `<span style="left:${5.5 + i * 22.75}%" class="${i === 0 ? "axis-first" : i === 4 ? "axis-last" : ""}">${seconds >= 3600 ? `${(seconds / 3600).toFixed(2)} h` : `${seconds.toFixed(1)} s`}</span>`;
+    }).join("");
     const label =
       kind === "cpu"
         ? "Process CPU usage in percent over capture time"

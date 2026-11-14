@@ -7,7 +7,9 @@ export function resourceActivity(resources: PulseResources) {
   let memoryPeak = 0n;
   const samples = resources.samples.map((sample) => {
     const cpu =
-      sample.intervalNs > 0n && sample.cpuUserNs !== null && sample.cpuSystemNs !== null
+      sample.intervalNs >= 1_000_000_000n &&
+      sample.cpuUserNs !== null &&
+      sample.cpuSystemNs !== null
         ? (Number(sample.cpuUserNs + sample.cpuSystemNs) / Number(sample.intervalNs)) * 100
         : null;
     if (cpu !== null) {

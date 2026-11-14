@@ -7,6 +7,58 @@ import { gunzipSync, gzipSync } from "node:zlib";
 
 const fixture = "tests/fixtures/quark-v1.qpulse";
 
+test("wrapped resource charts use the retained range of a long capture", async ({ page }) => {
+  const raw = JSON.parse(
+    gunzipSync(readFileSync("tests/fixtures/resources-v3.qpulse")).toString("utf8"),
+  ) as {
+    threads: {
+      started_ns: number;
+      ended_ns: number;
+      network: { coverage: { to_ns: number } };
+      resources: unknown;
+    }[];
+  };
+  const main = raw.threads[0];
+  if (!main) throw new Error("Missing main-thread fixture");
+  const length = 86_400_000_000_000;
+  main.ended_ns = main.started_ns + length;
+  main.network.coverage.to_ns = length;
+  main.resources = {
+    samples_dropped: 1,
+    samples: Array.from({ length: 1200 }, (_, i) => [
+      length - (1199 - i) * 1_000_000_000,
+      1_000_000_000,
+      i === 600 ? 2_000_000_000 : 1_000_000_000,
+      0,
+      64 * 1_048_576,
+      128 * 1_048_576,
+    ]),
+  };
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles({
+    name: "wrapped.qpulse",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(raw)),
+  });
+  await expect(page.getByRole("status")).toHaveText("Report loaded.");
+  for (const width of [1440, 375]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const cpu = page.locator("#resource-cpu-chart");
+    expect(Number(await cpu.locator(".resource-point").first().getAttribute("cx"))).toBeCloseTo(55);
+    expect(Number(await cpu.locator(".resource-point").last().getAttribute("cx"))).toBeCloseTo(965);
+    const memoryPath = await page.locator("#resource-memory-chart .chart-line").getAttribute("d");
+    expect(memoryPath).toMatch(/^M55\.00 /);
+    expect(memoryPath).toMatch(/L965\.00 [\d.]+\s*$/);
+    const axis = cpu.locator("..").locator(".axis-x");
+    await expect(axis.locator(".axis-first")).toHaveText("23.67 h");
+    await expect(axis.locator(".axis-last")).toHaveText("24.00 h");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    await page.screenshot({ path: `test-results/resources-wrapped-${width}.png`, fullPage: true });
+  }
+});
+
 test("v3 resource samples show CPU intervals, PHP heap and full-capture slow ticks", async ({
   page,
 }) => {
@@ -34,6 +86,7 @@ test("v3 resource samples show CPU intervals, PHP heap and full-capture slow tic
   await expect(resources).toContainText("100% equals one CPU core");
   await expect(resources).toContainText("not process RSS");
   await expect(resources).toContainText("may miss peaks between samples");
+  await expect(resources).toContainText("intervals shorter than one second");
   await expect(page.locator("#view-content")).toContainText(
     "2 slow ticks above the fixed 50 ms threshold in the full capture",
   );

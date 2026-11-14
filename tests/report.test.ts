@@ -163,6 +163,32 @@ test("v3 wrapped resource history is bounded and shares the global row budget", 
   );
 });
 
+test("short final CPU intervals cannot inflate current, average or peak rates", async () => {
+  const report = await parseReport(buffer(resourceGzip));
+  const resources = report.threads[0]?.resources;
+  assert.ok(resources);
+  const sample = resources.samples[1];
+  assert.ok(sample);
+  const activity = resourceActivity({
+    samplesDropped: 0n,
+    samples: [
+      sample,
+      {
+        ...sample,
+        offsetNs: sample.offsetNs + 1n,
+        intervalNs: 1n,
+        cpuUserNs: 15_625_000n,
+        cpuSystemNs: 0n,
+        memoryBytes: 90n * 1_048_576n,
+      },
+    ],
+  });
+  assert.equal(activity.current?.cpu, null);
+  assert.equal(activity.cpuAverage, 100);
+  assert.equal(activity.cpuPeak, 100);
+  assert.equal(activity.current?.memoryBytes, 90n * 1_048_576n);
+});
+
 test("Quark v2 telemetry preserves signed evidence and retained bucket counts without double-counting events as attacks", async () => {
   const report = await parseReport(buffer(networkGzip));
   assert.deepEqual(await parseReport(buffer(networkFixture)), report);
