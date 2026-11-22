@@ -2,16 +2,21 @@ import {
   NETWORK_ACTIONS,
   NETWORK_PHASES,
   NETWORK_REASONS,
+  NETWORK_TRANSPORTS,
+  type NetworkTransport,
+  type PulseAsync,
   type PulseNetwork,
   type PulseNode,
   type PulseReport,
   type PulseResources,
   type PulseThread,
   type PulseTick,
+  type ZoneOwner,
 } from "../model/report.ts";
 
 export const MAX_BYTES = 8_388_608;
 const MAX_INT = 9_223_372_036_854_775_807n;
+const COUNTER_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const encoder = new TextEncoder();
 
 export class ReportError extends Error {
@@ -65,6 +70,7 @@ function choice<T extends string>(value: unknown, values: readonly T[]): T {
 function resources(
   value: unknown,
   length: bigint,
+  columns: 6 | 8,
   charge: (count: number) => void,
 ): PulseResources {
   const raw = object(value, 2);
@@ -78,8 +84,9 @@ function resources(
   let previous = 0n;
   return {
     samplesDropped,
+    hasRss: columns === 8,
     samples: samples.map((value, index) => {
-      const values = row(value, 6);
+      const values = row(value, columns);
       const offsetNs = integer(values[0], previous, length);
       const intervalNs = integer(values[1], 0n, offsetNs);
       requireValid(
@@ -98,6 +105,15 @@ function resources(
         "Invalid CPU sample counters.",
       );
       const memoryAllocatedBytes = integer(values[5]);
+      let rssBytes: bigint | null = null;
+      let rssPeakBytes: bigint | null = null;
+      if (columns === 8) {
+        requireValid((values[6] === null) === (values[7] === null), "Incomplete RSS sample.");
+        if (values[7] !== null) {
+          rssPeakBytes = integer(values[7]);
+          rssBytes = integer(values[6], 0n, rssPeakBytes);
+        }
+      }
       previous = offsetNs;
       return {
         offsetNs,
@@ -106,9 +122,72 @@ function resources(
         cpuSystemNs,
         memoryBytes: integer(values[4], 0n, memoryAllocatedBytes),
         memoryAllocatedBytes,
+        rssBytes,
+        rssPeakBytes,
       };
     }),
   };
+}
+
+function asyncStats(value: unknown): PulseAsync {
+  const raw = object(value, 14);
+  const submitted = integer(raw.submitted);
+  const completed = integer(raw.completed, 0n, submitted);
+  const pair = (metric: string) => {
+    const total = integer(raw[`${metric}_total_ns`]);
+    return [total, integer(raw[`${metric}_max_ns`], 0n, total)] as const;
+  };
+  const [turnaroundTotalNs, turnaroundMaxNs] = pair("turnaround");
+  const [pickupTotalNs, pickupMaxNs] = pair("pickup");
+  const [waitTotalNs, waitMaxNs] = pair("wait");
+  const [runTotalNs, runMaxNs] = pair("run");
+  const heapPeakBytes = integer(raw.heap_peak_bytes);
+  return {
+    submitted,
+    completed,
+    queuePeak: integer(raw.queue_peak),
+    turnaroundTotalNs,
+    turnaroundMaxNs,
+    pickupTotalNs,
+    pickupMaxNs,
+    ran: integer(raw.ran),
+    waitTotalNs,
+    waitMaxNs,
+    runTotalNs,
+    runMaxNs,
+    heapBytes: integer(raw.heap_bytes, 0n, heapPeakBytes),
+    heapPeakBytes,
+  };
+}
+
+function transports(
+  value: unknown,
+  charge: (count: number) => void,
+  spend: (bytes: number) => void,
+): NetworkTransport[] {
+  const names = new Set<string>();
+  const result = list(value, NETWORK_TRANSPORTS.length).map((item) => {
+    const raw = object(item, 2);
+    const name = choice(raw.name, NETWORK_TRANSPORTS);
+    requireValid(!names.has(name), "Duplicate network transport.");
+    names.add(name);
+    const rawCounters = list(raw.counters, 64);
+    charge(rawCounters.length);
+    const keys = new Set<string>();
+    const counters = rawCounters.map((counter) => {
+      const values = row(counter, 2);
+      const key = values[0];
+      requireValid(
+        typeof key === "string" && COUNTER_NAME.test(key) && !keys.has(key),
+        "Invalid network transport counter.",
+      );
+      keys.add(key);
+      spend(key.length);
+      return { name: key, value: integer(values[1]) };
+    });
+    return { name, counters };
+  });
+  return result;
 }
 
 function network(
@@ -116,9 +195,12 @@ function network(
   length: bigint,
   tickCount: bigint,
   recording: boolean,
+  version: number,
   charge: (count: number) => void,
+  spend: (bytes: number) => void,
 ): PulseNetwork {
-  const raw = object(value, 8);
+  const raw = object(value, version >= 4 ? 9 : 8);
+  const nativeTransports = version >= 4 ? transports(raw.transports, charge, spend) : undefined;
   const coverage = object(raw.coverage, 7);
   requireValid(
     coverage.from_ns === 0n &&
@@ -238,6 +320,7 @@ function network(
     events,
     windows,
     counterOverflows,
+    ...(nativeTransports ? { transports: nativeTransports } : {}),
     sessionsDropped: integer(raw.sessions_dropped),
     eventsDropped: integer(raw.events_dropped),
     windowsDropped: integer(raw.windows_dropped),
@@ -342,12 +425,19 @@ function normalize(data: unknown): PulseReport {
   const report = object(data, 5);
   requireValid(
     report.format === "quark.pulse" &&
-      (report.version === 1n || report.version === 2n || report.version === 3n) &&
+      (report.version === 1n ||
+        report.version === 2n ||
+        report.version === 3n ||
+        report.version === 4n) &&
       report.time_unit === "ns",
-    "Unsupported Pulse format or version. Expected quark.pulse v1, v2 or v3 in nanoseconds.",
+    "Unsupported Pulse format or version. Expected quark.pulse v1, v2, v3 or v4 in nanoseconds.",
   );
   let textBudget = MAX_BYTES / 2;
   let rowBudget = 131_072;
+  function spend(bytes: number): void {
+    textBudget -= bytes;
+    requireValid(textBudget >= 0, "Report exceeds the text budget.");
+  }
   function text(value: unknown, max: number): string {
     requireValid(
       typeof value === "string" && value.length > 0 && value.length <= max,
@@ -359,8 +449,7 @@ function normalize(data: unknown): PulseReport {
     );
     const length = encoder.encode(value).length;
     requireValid(length <= max, "Report text exceeds the byte limit.");
-    textBudget -= length;
-    requireValid(textBudget >= 0, "Report exceeds the text budget.");
+    spend(length);
     return value;
   }
   function charge(count: number): void {
@@ -369,7 +458,7 @@ function normalize(data: unknown): PulseReport {
   }
   const metadata = object(report.metadata, 7);
   const result: PulseReport = {
-    version: report.version === 1n ? 1 : report.version === 2n ? 2 : 3,
+    version: Number(report.version) as PulseReport["version"],
     metadata: {
       quarkVersion: text(metadata.quark_version, 4096),
       phpVersion: text(metadata.php_version, 4096),
@@ -389,7 +478,7 @@ function normalize(data: unknown): PulseReport {
   };
   const names = new Set<string>();
   for (const value of list(report.threads, 128)) {
-    const raw = object(value, result.version === 1 ? 20 : result.version === 2 ? 21 : 23);
+    const raw = object(value, [20, 21, 23, 25][result.version - 1] ?? 25);
     const name = text(raw.thread, 256);
     requireValid(!names.has(name), "Duplicate thread name.");
     names.add(name);
@@ -404,6 +493,15 @@ function normalize(data: unknown): PulseReport {
     const spikeThresholdNs = integer(raw.spike_threshold_ns, 0n, 60_000_000_000n);
     const zones = list(raw.zones, 4096).map((zone) => text(zone, 256));
     requireValid(new Set(zones).size === zones.length, "Duplicate zone name.");
+    let zoneOwners: ZoneOwner[] | undefined;
+    if (result.version >= 4) {
+      let previousZone = -1n;
+      zoneOwners = list(raw.zone_owners, zones.length).map((value) => {
+        const values = row(value, 2);
+        previousZone = integer(values[0], previousZone + 1n, BigInt(zones.length - 1));
+        return { zone: Number(previousZone), plugin: text(values[1], 256) };
+      });
+    }
     const rows = list(raw.nodes, 16_384);
     const active = list(raw.active_ticks, 16_384);
     requireValid(rows.length === active.length, "Active tick counters do not match nodes.");
@@ -543,8 +641,16 @@ function normalize(data: unknown): PulseReport {
       unbalancedTicks: integer(raw.unbalanced_ticks),
     };
     if (result.version >= 2)
-      thread.network = network(raw.network, endedNs - startedNs, tickCount, raw.recording, charge);
-    if (result.version === 3) {
+      thread.network = network(
+        raw.network,
+        endedNs - startedNs,
+        tickCount,
+        raw.recording,
+        result.version,
+        charge,
+        spend,
+      );
+    if (result.version >= 3) {
       const retainedSlow = BigInt(ticks.filter((tick) => tick.durationNs > 50_000_000n).length);
       thread.slowTickCount = integer(
         raw.slow_tick_count,
@@ -553,7 +659,14 @@ function normalize(data: unknown): PulseReport {
       );
       requireValid(Object.hasOwn(raw, "resources"), "Missing resource data.");
       thread.resources =
-        raw.resources === null ? null : resources(raw.resources, endedNs - startedNs, charge);
+        raw.resources === null
+          ? null
+          : resources(raw.resources, endedNs - startedNs, result.version >= 4 ? 8 : 6, charge);
+    }
+    if (result.version >= 4) {
+      thread.zoneOwners = zoneOwners ?? [];
+      requireValid(Object.hasOwn(raw, "async"), "Missing async worker data.");
+      thread.async = raw.async === null ? null : asyncStats(raw.async);
     }
     result.threads.push(thread);
   }

@@ -34,11 +34,52 @@ export interface ResourceSample {
   cpuSystemNs: bigint | null;
   memoryBytes: bigint;
   memoryAllocatedBytes: bigint;
+  /** Null when unavailable or before v4 */
+  rssBytes: bigint | null;
+  /** Null together with rssBytes */
+  rssPeakBytes: bigint | null;
 }
 
 export interface PulseResources {
   samples: ResourceSample[];
   samplesDropped: bigint;
+  /** v4 and newer */
+  hasRss: boolean;
+}
+
+/** Main fills the submit side, workers the run side */
+export interface PulseAsync {
+  submitted: bigint;
+  completed: bigint;
+  queuePeak: bigint;
+  turnaroundTotalNs: bigint;
+  turnaroundMaxNs: bigint;
+  pickupTotalNs: bigint;
+  pickupMaxNs: bigint;
+  ran: bigint;
+  waitTotalNs: bigint;
+  waitMaxNs: bigint;
+  runTotalNs: bigint;
+  runMaxNs: bigint;
+  heapBytes: bigint;
+  heapPeakBytes: bigint;
+}
+
+export interface ZoneOwner {
+  zone: number;
+  plugin: string;
+}
+
+export const NETWORK_TRANSPORTS = ["raklib", "bedwire"] as const;
+
+export interface TransportCounter {
+  name: string;
+  value: bigint;
+}
+
+export interface NetworkTransport {
+  name: (typeof NETWORK_TRANSPORTS)[number];
+  counters: TransportCounter[];
 }
 
 export const NETWORK_PHASES = [
@@ -73,7 +114,12 @@ export const NETWORK_REASONS = [
   "transport.header",
   "packet.size",
 ] as const;
-export const NETWORK_ACTIONS = ["drop_packet", "drop_batch", "reject_batch", "disconnect"] as const;
+export const NETWORK_ACTIONS = [
+  "drop_packet",
+  "drop_batch",
+  "reject_batch",
+  "disconnect",
+] as const;
 
 export interface NetworkSession {
   id: number;
@@ -121,12 +167,18 @@ export interface PulseNetwork {
   eventsDropped: bigint;
   windowsDropped: bigint;
   counterOverflows: bigint;
+  /** v4+ */
+  transports?: NetworkTransport[];
 }
 
 export interface PulseThread {
   network?: PulseNetwork;
   resources?: PulseResources | null;
   slowTickCount?: bigint;
+  /** Zone index to plugin full name, ascending (v4+) */
+  zoneOwners?: ZoneOwner[];
+  /** v4+, null if the thread never recorded. */
+  async?: PulseAsync | null;
   name: string;
   startedNs: bigint;
   endedNs: bigint;
@@ -149,7 +201,7 @@ export interface PulseThread {
 }
 
 export interface PulseReport {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   metadata: {
     quarkVersion: string;
     phpVersion: string;

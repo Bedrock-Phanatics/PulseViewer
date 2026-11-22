@@ -10,56 +10,47 @@ import {
   type SortKey,
 } from "./analysis.ts";
 import type { PulseNetwork, PulseReport, PulseThread, PulseTick } from "./model/report.ts";
+import { newState, tableBody, tableHtml, type TableConfig, type TableState } from "./table.ts";
+import { cpuPercent, empty, html, memory, metric, panel } from "./ui.ts";
+import { asyncView, memoryView, pluginView, transportsPanel } from "./views.ts";
 
 const PAGE_SIZE = 75;
-const views = ["Overview", "Call tree", "Hotspots", "Spikes", "Network", "Threads"] as const;
+const views = [
+  "Overview",
+  "Call tree",
+  "Hotspots",
+  "Spikes",
+  "Memory",
+  "Plugins",
+  "Async",
+  "Network",
+  "Threads",
+] as const;
 type View = (typeof views)[number];
 type ActivityBucket = ReturnType<typeof networkActivity>["buckets"][number];
-const paths = [
-  "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
-  "M5 3v14h14M5 7h10M5 12h10M15 5v4M15 10v4M19 15v4",
-  "M3 18h18M6 14V9M12 14V3M18 14V6",
-  "M2 13h5l3-9 4 16 3-7h5",
-  "M3 4h6v6H3zM15 14h6v6h-6zM6 10v7h9M18 14V7H9",
-  "M3 5h18M3 12h18M3 19h18M7 3v4M17 10v4M10 17v4",
-];
-function icon(index: number): string {
-  return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[index]}" /></svg>`;
+const paths: Record<View, string> = {
+  Overview: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
+  "Call tree": "M5 3v14h14M5 7h10M5 12h10M15 5v4M15 10v4M19 15v4",
+  Hotspots: "M3 18h18M6 14V9M12 14V3M18 14V6",
+  Spikes: "M2 13h5l3-9 4 16 3-7h5",
+  Memory: "M4 7h16v10H4zM8 7V4M12 7V4M16 7V4M8 17v3M12 17v3M16 17v3",
+  Plugins: "M9 3v5M15 3v5M6 8h12v4a6 6 0 0 1-12 0zM12 18v3",
+  Async: "M4 6h8M4 12h12M4 18h8M16 4l4 2-4 2M20 10l-4 2 4 2M16 16l4 2-4 2",
+  Network: "M3 4h6v6H3zM15 14h6v6h-6zM6 10v7h9M18 14V7H9",
+  Threads: "M3 5h18M3 12h18M3 19h18M7 3v4M17 10v4M10 17v4",
+};
+function icon(name: View): string {
+  return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name]}" /></svg>`;
 }
-function html(value: string): string {
-  return value.replace(
-    /[&<>"']/g,
-    (char) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char,
-  );
-}
-function category(name: string): string {
-  if (/^(plugin|event)\./i.test(name)) return "Plugins";
+function category(name: string, owned = false): string {
+  if (owned || /^(plugin|event)\./i.test(name)) return "Plugins";
   if (/world|chunk|entity/i.test(name)) return "World";
   if (/network|packet|raknet/i.test(name)) return "Network";
   if (/scheduler|task/i.test(name)) return "Scheduler";
   return "Other";
 }
-function empty(message: string): string {
-  return `<div class="empty"><p>${message}</p></div>`;
-}
-function metric(label: string, value: string, detail: string, accent = false): string {
-  return `<div class="metric${accent ? " accent-metric" : ""}"><span class="metric-label">${label}</span><strong>${html(value)}</strong><span class="metric-detail">${detail}</span></div>`;
-}
-function panel(title: string, subtitle: string, content: string, action = ""): string {
-  return `<section class="panel"><div class="panel-heading"><div><h2>${title}</h2><p>${subtitle}</p></div>${action}</div>${content}</section>`;
-}
 function tickLabel(tick: PulseTick): string {
   return `Tick #${tick.id}, ${(Number(tick.offsetNs) / 1e9).toFixed(3)} seconds into capture, ${time(tick.durationNs)}`;
-}
-
-function cpuPercent(value: number | null | undefined): string {
-  return value == null ? "—" : `${value.toFixed(1)}%`;
-}
-
-function memory(value: bigint): string {
-  const mib = Number(value) / 1_048_576;
-  return mib >= 1024 ? `${(mib / 1024).toFixed(1)} GiB` : `${mib.toFixed(1)} MiB`;
 }
 
 export function showReport(host: HTMLElement, report: PulseReport, sample: boolean): void {
@@ -87,7 +78,27 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
   let networkBuckets: ActivityBucket[] = [];
   let networkFirst = 0n;
   let networkSpan = 1n;
+  let selectedPlugin: string | undefined;
   const collapsed = new Set<number>();
+  // tables register while a view renders so input and sort can update them in place
+  const tables = new Map<string, { config: TableConfig<never>; state: TableState }>();
+  const states = new Map<string, TableState>();
+  const tableHost = {
+    table<R>(config: TableConfig<R>): string {
+      let state = states.get(config.id);
+      if (!state) {
+        state = newState(config);
+        states.set(config.id, state);
+      }
+      tables.set(config.id, { config: config as unknown as TableConfig<never>, state });
+      return tableHtml(config, state);
+    },
+  };
+  function updateTable(id: string): void {
+    const entry = tables.get(id);
+    const target = host.querySelector<HTMLElement>(`#tb-${CSS.escape(id)}`);
+    if (entry && target) target.innerHTML = tableBody(entry.config, entry.state);
+  }
   const thread = () => report.threads[threadIndex];
   const analysis = () => analyses[threadIndex];
 
@@ -103,6 +114,9 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
       current?.nodes.length ?? 0,
       analysis()?.hotspots.length ?? 0,
       current?.spikes.length ?? 0,
+      current?.resources?.samples.length ?? "",
+      current?.zoneOwners ? new Set(current.zoneOwners.map((owner) => owner.plugin)).size : "",
+      report.version >= 4 ? report.threads.filter((item) => item.async).length : "",
       current?.network?.events.length ?? "",
       report.threads.length,
     ];
@@ -115,10 +129,16 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
             ? "Find the zones with the greatest cost on this thread."
             : view === "Spikes"
               ? "Inspect the scopes recorded inside slow ticks."
-              : view === "Network"
-                ? "Inspect recorded traffic and packet-handling decisions."
-                : "Inspect the work recorded on each thread.";
-    host.innerHTML = `<aside class="sidebar"><div class="sidebar-label">Analysis${sample ? '<span class="sample-tag">Sample</span>' : ""}</div><nav aria-label="Analysis views">${views.map((name, index) => `<button class="nav-item${view === name ? " active" : ""}" data-view="${name}" ${view === name ? 'aria-current="page"' : ""}>${icon(index)}<span>${name}</span><small>${counts[index]}</small></button>`).join("")}</nav><div class="sidebar-section"><div class="sidebar-label">Capture</div>${metadata()}</div></aside><div class="analysis-content"><div class="page-heading"><div><div class="heading-title"><h1>${view}</h1>${sample ? '<span class="capture-label">Sample capture</span>' : ""}</div><p>${description}</p></div><label class="thread-picker"><span>Thread</span><select id="thread-select" aria-label="Thread" ${report.threads.length === 0 ? "disabled" : ""}>${report.threads.map((item, index) => `<option value="${index}" ${threadIndex === index ? "selected" : ""}>${html(item.name)}</option>`).join("") || "<option>No threads</option>"}</select></label></div>${current ? warnings(current) : ""}<div id="view-content">${!current && view !== "Threads" ? empty("This capture has no threads. Open another report to start exploring.") : view === "Overview" ? overview() : view === "Call tree" || view === "Hotspots" ? zoneView() : view === "Spikes" ? spikeView() : view === "Network" ? networkView() : threadView()}</div></div>`;
+              : view === "Memory"
+                ? "Compare PHP heap with whole-process memory over the capture."
+                : view === "Plugins"
+                  ? "Rank plugins by measured main-thread time."
+                  : view === "Async"
+                    ? "Follow tasks from submission to result, and see how busy workers are."
+                    : view === "Network"
+                      ? "Inspect recorded traffic, transport counters and packet-handling decisions."
+                      : "Inspect the work recorded on each thread.";
+    host.innerHTML = `<aside class="sidebar"><div class="sidebar-label">Analysis${sample ? '<span class="sample-tag">Sample</span>' : ""}</div><nav aria-label="Analysis views">${views.map((name, index) => `<button class="nav-item${view === name ? " active" : ""}" data-view="${name}" ${view === name ? 'aria-current="page"' : ""}>${icon(name)}<span>${name}</span><small>${counts[index]}</small></button>`).join("")}</nav><div class="sidebar-section"><div class="sidebar-label">Capture</div>${metadata()}</div></aside><div class="analysis-content"><div class="page-heading"><div><div class="heading-title"><h1>${view === "Async" ? "Async workers" : view}</h1>${sample ? '<span class="capture-label">Sample capture</span>' : ""}</div><p>${description}</p></div><label class="thread-picker"><span>Thread</span><select id="thread-select" aria-label="Thread" ${report.threads.length === 0 ? "disabled" : ""}>${report.threads.map((item, index) => `<option value="${index}" ${threadIndex === index ? "selected" : ""}>${html(item.name)}</option>`).join("") || "<option>No threads</option>"}</select></label></div>${current ? warnings(current) : ""}<div id="view-content">${!current && view !== "Threads" && view !== "Async" ? empty("This capture has no threads. Open another report to start exploring.") : view === "Overview" ? overview() : view === "Call tree" || view === "Hotspots" ? zoneView() : view === "Spikes" ? spikeView() : view === "Memory" ? (current ? memoryView(report, current, tableHost) : "") : view === "Plugins" ? (current ? pluginPanel(current) : "") : view === "Async" ? asyncView(report, tableHost) : view === "Network" ? networkView() : threadView()}</div></div>`;
     if (view === "Overview") updateTick();
     if (view === "Spikes") updateSpike();
     if (
@@ -132,6 +152,11 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
           .querySelector<HTMLElement>(`.nav-item[data-view="${CSS.escape(focused.dataset.view)}"]`)
           ?.focus();
     }
+  }
+  function pluginPanel(item: PulseThread): string {
+    const result = pluginView(report, item, tableHost, selectedPlugin);
+    selectedPlugin = result.selected;
+    return result.html;
   }
   function warnings(item: PulseThread): string {
     const messages = [];
@@ -325,6 +350,11 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     const data = analysis();
     if (!item || !data) return "";
     if (view === "Call tree" && flame) return flameGraph(item);
+    const owners = new Map<string, string>();
+    for (const owner of item.zoneOwners ?? []) {
+      const name = item.zones[owner.zone];
+      if (name !== undefined) owners.set(name, owner.plugin);
+    }
     const rows =
       view === "Call tree"
         ? treeRows(item, data, collapsed, sort, query.toLowerCase(), direction).map(
@@ -334,7 +364,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
             .filter(
               (zone) =>
                 zone.name.toLowerCase().includes(query.toLowerCase()) &&
-                (filter === "All zones" || category(zone.name) === filter),
+                (filter === "All zones" || category(zone.name, owners.has(zone.name)) === filter),
             )
             .sort((a, b) => compare(a, b, sort) * direction)
             .map((zone) => ({ ...zone, id: 0, depth: 0 }));
@@ -346,7 +376,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
         const share = percent(view === "Call tree" ? row.totalNs : row.selfNs, baseline);
         const childCount = data.children[row.id]?.length ?? 0;
         const closed = !query && collapsed.has(row.id);
-        return `<tr><td class="zone-name"><div style="padding-left:${Math.min(row.depth, 16) * 16}px">${view === "Call tree" ? (childCount ? `<button class="tree-toggle" data-node="${row.id}" aria-label="${closed ? "Expand" : "Collapse"} ${html(row.name)}" aria-expanded="${!closed}" ${query ? "disabled" : ""}>${closed ? "▸" : "▾"}</button>` : '<span class="tree-leaf" aria-hidden="true"></span>') : ""}<span title="${html(row.name)}${row.depth ? `, depth ${row.depth}` : ""}">${html(row.name)}</span></div></td><td>${time(row.totalNs)}</td><td class="self-cell">${time(row.selfNs)}</td><td>${time(row.calls ? row.totalNs / row.calls : undefined)}</td><td>${row.calls.toLocaleString()}</td><td>${time(row.maxNs)}</td><td><div class="share-cell"><span class="share-track"><i style="width:${Math.min(100, share)}%"></i></span>${baseline ? `${share.toFixed(1)}%` : "—"}</div></td></tr>`;
+        return `<tr><td class="zone-name"><div style="padding-left:${Math.min(row.depth, 16) * 16}px">${view === "Call tree" ? (childCount ? `<button class="tree-toggle" data-node="${row.id}" aria-label="${closed ? "Expand" : "Collapse"} ${html(row.name)}" aria-expanded="${!closed}" ${query ? "disabled" : ""}>${closed ? "▸" : "▾"}</button>` : '<span class="tree-leaf" aria-hidden="true"></span>') : ""}<span title="${html(row.name)}${row.depth ? `, depth ${row.depth}` : ""}">${html(row.name)}</span>${owners.has(row.name) ? `<small class="scope-path owner" title="Plugin that registered this zone">${html(owners.get(row.name) ?? "")}</small>` : ""}</div></td><td>${time(row.totalNs)}</td><td class="self-cell">${time(row.selfNs)}</td><td>${time(row.calls ? row.totalNs / row.calls : undefined)}</td><td>${row.calls.toLocaleString()}</td><td>${time(row.maxNs)}</td><td><div class="share-cell"><span class="share-track"><i style="width:${Math.min(100, share)}%"></i></span>${baseline ? `${share.toFixed(1)}%` : "—"}</div></td></tr>`;
       })
       .join("");
     return `<div class="table-scroll"><table><thead><tr>${header(view === "Call tree" ? "Call path" : "Zone")}${header("Total", "totalNs")}${header("Self", "selfNs")}${header("Avg call", "average")}${header("Calls", "calls")}${header("Max call", "maxNs")}${header(view === "Call tree" ? "% root time" : "% self time")}</tr></thead><tbody>${body}</tbody></table></div>${rows.length ? "" : empty("No zones match this search.")}${pages}`;
@@ -562,11 +592,13 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
       .join("");
     const losses =
       data.sessionsDropped || data.eventsDropped || data.windowsDropped || data.counterOverflows;
-    return `<div class="network-toolbar"><label for="network-session">Session</label><select id="network-session">${options}</select><span>${session ? `Protocol ${session.protocol ?? "unknown"}, ${session.phase.replaceAll("_", " ")}. First observed ${seconds(session.firstNs)}${session.closedNs === null ? "" : `, closed ${seconds(session.closedNs)}`}` : "Session IDs are local to this thread and capture."}</span></div>${losses ? '<p class="notice">Telemetry is incomplete. Retained totals may understate activity. See coverage details below.</p>' : ""}<div class="metrics">${metric("Recorded packets", count(totals.packets), "Retained windows", true)}${metric("Received bytes", count(totals.receivedBytes), "MCPE batches, before decryption")}${metric("Decompressed bytes", count(totals.decompressedBytes), "Retained window total")}${metric("Decoding failures", count(totals.decodeFailed), "Separate from plugin cancellations")}${metric("Recorded events", events.length.toLocaleString(), "Event records, not attack count")}</div>${panel("Packet activity", stride > 1 ? "Each bar shows the busiest retained bucket in that part of the timeline. Select a bucket for exact counts." : "Each bar shows packets in a retained one-second bucket. Click a bar or use the slider to inspect it.", chart)}<div class="overview-grid">${panel("Packet outcomes", "Counts overlap. A decoded packet may be cancelled or discarded later.", `<div class="network-outcomes">${outcome}</div>`)}${panel("Capture coverage", `${seconds(data.fromNs)} to ${seconds(data.toNs)} on this thread`, `<dl class="network-coverage"><dt>Retained sessions</dt><dd>${data.sessions.length}</dd><dt>Sessions not retained</dt><dd>${data.sessionsDropped.toLocaleString()}</dd><dt>Events evicted</dt><dd>${data.eventsDropped.toLocaleString()}</dd><dt>Windows evicted</dt><dd>${data.windowsDropped.toLocaleString()}</dd><dt>Counter saturations</dt><dd>${data.counterOverflows.toLocaleString()}</dd></dl>`)}</div>${panel("Recorded decisions", "Events show validation failures and enforced limits. They do not establish malicious intent.", `<div class="table-scroll"><table id="network-events" class="network-events"><thead><tr><th>Time</th><th>Session</th><th>Packet ID</th><th>Reason</th><th>Action</th><th>Phase</th><th>Observed</th><th>Limit or expected</th></tr></thead><tbody>${eventRows}</tbody></table></div>${events.length ? pagination(events.length) : empty("No decision events were retained for this selection.")}`)}<details class="network-notes"><summary>How to read this evidence</summary><p>One failure can produce a rejection and a separate disconnect event. Event records are not distinct attacks. Rate-limit observations compare requested tokens with available token budget. Decompression-limit observations may be a measured decoded prefix or a declared output length, rather than the full payload size.</p><p>Traffic bytes exclude RakNet framing. Unknown session IDs may combine activity from unretained sessions. Missing buckets are not reconstructed; evictions may leave the earliest retained bucket incomplete. Counter saturation makes displayed window totals lower bounds. The final bucket may cover less than one second. Recording gaps prevent conclusions about unrecorded traffic.</p></details>`;
+    return `<div class="network-toolbar"><label for="network-session">Session</label><select id="network-session">${options}</select><span>${session ? `Protocol ${session.protocol ?? "unknown"}, ${session.phase.replaceAll("_", " ")}. First observed ${seconds(session.firstNs)}${session.closedNs === null ? "" : `, closed ${seconds(session.closedNs)}`}` : "Session IDs are local to this thread and capture."}</span></div>${losses ? '<p class="notice">Telemetry is incomplete. Retained totals may understate activity. See coverage details below.</p>' : ""}<div class="metrics">${metric("Recorded packets", count(totals.packets), "Retained windows", true)}${metric("Received bytes", count(totals.receivedBytes), "MCPE batches, before decryption")}${metric("Decompressed bytes", count(totals.decompressedBytes), "Retained window total")}${metric("Decoding failures", count(totals.decodeFailed), "Separate from plugin cancellations")}${metric("Recorded events", events.length.toLocaleString(), "Event records, not attack count")}</div>${item ? transportsPanel(report, item) : ""}${panel("Packet activity", stride > 1 ? "Each bar shows the busiest retained bucket in that part of the timeline. Select a bucket for exact counts." : "Each bar shows packets in a retained one-second bucket. Click a bar or use the slider to inspect it.", chart)}<div class="overview-grid">${panel("Packet outcomes", "Counts overlap. A decoded packet may be cancelled or discarded later.", `<div class="network-outcomes">${outcome}</div>`)}${panel("Capture coverage", `${seconds(data.fromNs)} to ${seconds(data.toNs)} on this thread`, `<dl class="network-coverage"><dt>Retained sessions</dt><dd>${data.sessions.length}</dd><dt>Sessions not retained</dt><dd>${data.sessionsDropped.toLocaleString()}</dd><dt>Events evicted</dt><dd>${data.eventsDropped.toLocaleString()}</dd><dt>Windows evicted</dt><dd>${data.windowsDropped.toLocaleString()}</dd><dt>Counter saturations</dt><dd>${data.counterOverflows.toLocaleString()}</dd></dl>`)}</div>${panel("Recorded decisions", "Events show validation failures and enforced limits. They do not establish malicious intent.", `<div class="table-scroll"><table id="network-events" class="network-events"><thead><tr><th>Time</th><th>Session</th><th>Packet ID</th><th>Reason</th><th>Action</th><th>Phase</th><th>Observed</th><th>Limit or expected</th></tr></thead><tbody>${eventRows}</tbody></table></div>${events.length ? pagination(events.length) : empty("No decision events were retained for this selection.")}`)}<details class="network-notes"><summary>How to read this evidence</summary><p>One failure can produce a rejection and a separate disconnect event. Event records are not distinct attacks. Rate-limit observations compare requested tokens with available token budget. Decompression-limit observations may be a measured decoded prefix or a declared output length, rather than the full payload size.</p><p>Traffic bytes exclude RakNet framing. Unknown session IDs may combine activity from unretained sessions. Missing buckets are not reconstructed; evictions may leave the earliest retained bucket incomplete. Counter saturation makes displayed window totals lower bounds. The final bucket may cover less than one second. Recording gaps prevent conclusions about unrecorded traffic.</p></details>`;
   }
   function resetThread(index: number): void {
     if (!report.threads[index]) return;
     threadIndex = index;
+    states.clear();
+    selectedPlugin = undefined;
     page = 0;
     selectedTick = -1;
     tickPinned = false;
@@ -601,6 +633,27 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     if (action.view && views.includes(action.view as View)) {
       view = action.view as View;
       page = 0;
+      render();
+    } else if (action.tsort) {
+      const [id = "", key = ""] = action.tsort.split("|");
+      const entry = tables.get(id);
+      if (entry) {
+        const column = entry.config.columns.find((item) => item.key === key);
+        entry.state.descending = entry.state.sort === key ? !entry.state.descending : !column?.text;
+        entry.state.sort = key;
+        entry.state.page = 0;
+        updateTable(id);
+      }
+    } else if (action.tpage) {
+      const [id = "", delta = "0"] = action.tpage.split("|");
+      const entry = tables.get(id);
+      if (entry) {
+        entry.state.page += Number(delta);
+        updateTable(id);
+      }
+    } else if (action.plugin !== undefined) {
+      selectedPlugin = action.plugin;
+      states.delete("plugin-zones");
       render();
     } else if (action.networkBucket !== undefined) {
       selectNetworkBucket(Number(action.networkBucket));
@@ -694,7 +747,14 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
   host.oninput = (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
-    if (target.id === "zone-search") {
+    if (target.dataset.tsearch) {
+      const entry = tables.get(target.dataset.tsearch);
+      if (entry) {
+        entry.state.query = target.value;
+        entry.state.page = 0;
+        updateTable(target.dataset.tsearch);
+      }
+    } else if (target.id === "zone-search") {
       query = target.value;
       page = 0;
       updateZones();

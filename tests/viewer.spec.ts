@@ -884,9 +884,21 @@ test("sample capture and every analysis view remain usable on mobile", async ({ 
   await expect(page.locator(".metric").filter({ hasText: "Average tick" })).toContainText(
     "800 ticks",
   );
-  for (const view of ["Overview", "Call tree", "Hotspots", "Spikes", "Network", "Threads"]) {
+  for (const view of [
+    "Overview",
+    "Call tree",
+    "Hotspots",
+    "Spikes",
+    "Memory",
+    "Plugins",
+    "Async",
+    "Network",
+    "Threads",
+  ]) {
     await page.locator(`.nav-item[data-view="${view}"]`).click();
-    await expect(page.locator(".page-heading h1")).toHaveText(view);
+    await expect(page.locator(".page-heading h1")).toHaveText(
+      view === "Async" ? "Async workers" : view,
+    );
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     ).toBe(true);
@@ -1038,4 +1050,157 @@ test("production assets, sample and parser worker work under a GitHub Pages subp
     server.closeAllConnections();
     await new Promise<void>((done) => server.close(() => done()));
   }
+});
+
+const v4 = "tests/fixtures/full-v4.qpulse";
+
+async function openReport(page: import("@playwright/test").Page, path: string) {
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles(path);
+  await expect(page.getByRole("status")).toHaveText("Report loaded.");
+}
+
+test("v4 captures open natively and the footer names the format", async ({ page }) => {
+  await openReport(page, v4);
+  await expect(page.locator("#report-summary")).toBeVisible();
+  await expect(page.locator("#error")).toBeHidden();
+  await expect(page.locator("footer span").first()).toHaveText("Format v4");
+});
+
+test("memory view separates PHP heap from process RSS and keeps unavailable samples blank", async ({
+  page,
+}) => {
+  await openReport(page, v4);
+  await page.locator('.nav-item[data-view="Memory"]').click();
+  await expect(page.locator(".metric").filter({ hasText: "Process RSS" })).toContainText("530 MiB");
+  await expect(page.locator(".metric").filter({ hasText: "Process peak RSS" })).toContainText(
+    "620 MiB",
+  );
+  await expect(page.locator(".metric").filter({ hasText: "PHP heap change" })).toContainText(
+    "+12.0 MiB",
+  );
+  await expect(page.locator("#memory-heap-chart")).toBeVisible();
+  await expect(page.locator("#memory-rss-chart")).toBeVisible();
+  const row = page.locator('[data-table="memory-samples"] tbody tr').filter({ hasText: "3.00 s" });
+  await expect(row.locator("td").nth(5)).toHaveText("—"); // RSS unavailable, not 0
+  await page.getByLabel("Search samples by time…").fill("2.00");
+  await expect(page.locator('[data-table="memory-samples"] tbody tr')).toHaveCount(1);
+  await page.getByRole("button", { name: /^Time/ }).click();
+  await expect(
+    page.locator('[data-table="memory-samples"] th[aria-sort="descending"]'),
+  ).toHaveCount(1);
+  await expect(page.getByText("PHP heap versus process memory")).toBeVisible();
+});
+
+test("plugins view ranks by total, avoids double counting and explains absent attribution", async ({
+  page,
+}) => {
+  await openReport(page, v4);
+  await page.locator('.nav-item[data-view="Plugins"]').click();
+  const rows = page.locator('[data-table="plugins"] tbody tr');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText("SkyWars");
+  await expect(rows.first()).toContainText("30.00 ms");
+  await expect(rows.first()).toContainText("24.00 ms");
+  await expect(rows.nth(1)).toContainText("12.00 ms");
+  await page.locator(".plugin-link[data-plugin='Economy']").click();
+  await expect(page.locator("#tb-plugin-zones")).toContainText("event.Economy.BalanceEvent");
+  await page.getByLabel("Search plugins…").fill("sky");
+  await expect(rows).toHaveCount(1);
+  await page.getByLabel("Thread", { exact: true }).selectOption({ label: "worker#1" });
+  await expect(page.locator("#view-content")).toContainText("No plugin-owned zones");
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles("tests/fixtures/resources-v3.qpulse");
+  await expect(page.getByRole("status")).toHaveText("Report loaded.");
+  await page.locator('.nav-item[data-view="Plugins"]').click();
+  await expect(page.locator("#view-content")).toContainText("requires Pulse v4");
+});
+
+test("async view compares threads, flags bottlenecks and distinguishes idle workers", async ({
+  page,
+}) => {
+  await openReport(page, v4);
+  await page.locator('.nav-item[data-view="Async"]').click();
+  await expect(page.locator(".metric").filter({ hasText: "Submitted" })).toContainText("12");
+  await expect(page.locator(".metric").filter({ hasText: "Peak queue depth" })).toContainText("5");
+  await expect(page.locator(".findings")).toContainText("worker#3: 88% busy");
+  const idle = page.locator('[data-table="async"] tbody tr').filter({ hasText: "worker#2" });
+  await expect(idle).toContainText("Worker (no tasks)");
+  await expect(idle.locator("td").nth(8)).toHaveText("0"); // zero tasks are a real zero
+  await expect(idle.locator("td").nth(9)).toHaveText("—"); // no tasks, so no average
+  await page.getByLabel("Search threads…").fill("worker#3");
+  await expect(page.locator('[data-table="async"] tbody tr')).toHaveCount(1);
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles("tests/fixtures/network-v2.qpulse");
+  await expect(page.getByRole("status")).toHaveText("Report loaded.");
+  await page.locator('.nav-item[data-view="Async"]').click();
+  await expect(page.locator("#view-content")).toContainText("requires Pulse v4");
+});
+
+test("network view shows transports separately, unknown counters and honest caveats", async ({
+  page,
+}) => {
+  await openReport(page, v4);
+  await page.locator('.nav-item[data-view="Network"]').click();
+  const bedwire = page.locator('[data-transport="bedwire"]');
+  const raklib = page.locator('[data-transport="raklib"]');
+  await expect(bedwire).toContainText("Packets rejected");
+  await expect(bedwire).toContainText("40,000");
+  await expect(bedwire).toContainText("Receive pauses");
+  await expect(bedwire).toContainText("Peak active sessions");
+  await expect(bedwire).toContainText("unrecognized");
+  await expect(bedwire).toContainText("future_widget_count");
+  await expect(bedwire).toContainText("does not imply hostile traffic");
+  await expect(raklib).toContainText("1.43 MiB");
+  await expect(raklib).not.toContainText("Packets rejected");
+  await expect(page.locator(".transport-section")).toContainText("not rates");
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles("tests/fixtures/network-v2.qpulse");
+  await expect(page.getByRole("status")).toHaveText("Report loaded.");
+  await page.locator('.nav-item[data-view="Network"]').click();
+  await expect(
+    page.locator(".transport-section, .panel").filter({ hasText: "require Pulse v4" }),
+  ).toBeVisible();
+});
+
+test("v4 plugin and thread names stay text and mobile layout has no overflow", async ({ page }) => {
+  const hostile = '<img src="x" onerror="window.compromised=true">';
+  const json = gunzipSync(readFileSync(v4))
+    .toString("utf8")
+    .replaceAll('"SkyWars"', JSON.stringify(hostile));
+  await page.setViewportSize({ width: 375, height: 800 });
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles({
+    name: "hostile.qpulse",
+    mimeType: "application/json",
+    buffer: Buffer.from(json),
+  });
+  await expect(page.getByRole("status")).toHaveText("Report loaded.");
+  for (const view of ["Memory", "Plugins", "Async", "Network", "Hotspots"]) {
+    await page.locator(`.nav-item[data-view="${view}"]`).click();
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+    expect(
+      await page.locator(".sidebar nav").evaluate((nav) => nav.scrollWidth <= nav.clientWidth),
+    ).toBe(true);
+  }
+  await page.locator('.nav-item[data-view="Plugins"]').click();
+  await expect(page.locator("#report-summary img")).toHaveCount(0);
+  await expect(page.locator('[data-table="plugins"]')).toContainText(hostile);
+  expect(await page.evaluate("window.compromised")).toBeUndefined();
+  await page.screenshot({ path: "test-results/v4-plugins-mobile.png", fullPage: true });
+});
+
+test("older fixtures show explanations instead of zeros in memory", async ({ page }) => {
+  await openReport(page, "tests/fixtures/quark-v1.qpulse");
+  await page.locator('.nav-item[data-view="Memory"]').click();
+  await expect(page.locator("#view-content")).toContainText("unavailable in Pulse v1");
+  await page.goto("/");
+  await page.locator("#report-file").setInputFiles("tests/fixtures/resources-v3.qpulse");
+  await expect(page.getByRole("status")).toHaveText("Report loaded.");
+  await page.locator('.nav-item[data-view="Memory"]').click();
+  await expect(page.locator(".metric").filter({ hasText: "Process RSS" })).toContainText(
+    "needs Pulse v4",
+  );
 });
