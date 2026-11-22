@@ -574,6 +574,7 @@ test("resource activity derives RSS, growth and deltas and skips unavailable sam
 test("transport counters keep documented order and render unknown counters last", async () => {
   const bedwire = thread(await load("full-v4"), "main").network?.transports?.[1];
   assert.ok(bedwire);
+  bedwire.counters.push({ name: "constructor", value: 1n });
   const ordered = orderedCounters(bedwire);
   assert.equal(ordered[0]?.name, "bytes_sent");
   assert.equal(ordered.at(-1)?.name, "future_widget_count");
@@ -581,6 +582,9 @@ test("transport counters keep documented order and render unknown counters last"
   assert.equal(unknown?.info.known, false);
   assert.equal(unknown?.info.label, "Future widget count");
   assert.equal(unknown?.info.kind, "count");
+  const constructorCounter = ordered.find((item) => item.name === "constructor");
+  assert.equal(constructorCounter?.info.known, false);
+  assert.equal(constructorCounter?.info.label, "Constructor");
   assert.equal(ordered.find((item) => item.name === "sessions_peak")?.info.group, "peak");
 });
 

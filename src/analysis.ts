@@ -406,7 +406,7 @@ export const TRANSPORT_LABELS = {
 } as const;
 
 function describeCounter(name: string): TransportInfo & { known: boolean } {
-  const known = KNOWN_COUNTERS[name];
+  const known = Object.hasOwn(KNOWN_COUNTERS, name) ? KNOWN_COUNTERS[name] : undefined;
   if (known) return { ...known, known: true };
   const words = name.split("_");
   const label = `${words[0]?.charAt(0).toUpperCase() ?? ""}${words[0]?.slice(1) ?? ""}${words.length > 1 ? ` ${words.slice(1).join(" ")}` : ""}`;

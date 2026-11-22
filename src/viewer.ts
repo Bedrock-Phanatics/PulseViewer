@@ -518,7 +518,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
     const count = (value: bigint) =>
       `${data.counterOverflows ? "≥ " : ""}${value.toLocaleString()}`;
     const seconds = (value: bigint) => `${(Number(value) / 1e9).toFixed(3)} s`;
-    const labels: Record<string, string> = {
+    const labels: Record<PulseNetwork["events"][number]["reason"], string> = {
       "rate.batch": "Batch rate limit",
       "rate.packet": "Packet rate limit",
       "batch.packet_limit": "Batch packet limit",
@@ -535,6 +535,7 @@ export function showReport(host: HTMLElement, report: PulseReport, sample: boole
       "encryption.invalid": "Invalid encryption",
       "packet.bad_packet_disconnect": "Bad packet disconnect",
       "transport.header": "Invalid transport header",
+      "packet.size": "Packet size limit",
     };
     const options = `<option value="all">All recorded sessions</option>${data.sessions.map((session) => `<option value="${session.id}" ${networkSession === session.id ? "selected" : ""}>Session ${session.id}</option>`).join("")}<option value="unknown" ${networkSession === null ? "selected" : ""}>Unattributed activity</option>`;
     const maximum = buckets.reduce(

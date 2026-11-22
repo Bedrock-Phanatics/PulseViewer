@@ -53,6 +53,7 @@ function chart(
   max *= 1.05;
   const x = (offset: bigint) => 55 + (Number(offset - first) / span) * 910;
   const y = (value: number) => 220 - (value / max) * 190;
+  const showAllPoints = samples.length <= 120;
   const paths = series
     .map((item) => {
       let path = "";
@@ -67,13 +68,15 @@ function chart(
         const px = x(sample.offsetNs).toFixed(2);
         const py = y(value).toFixed(2);
         path += `${connected ? "L" : "M"}${px} ${py} `;
+        const isolated =
+          !connected && (index + 1 === samples.length || item.pick(index + 1) === null);
+        if (showAllPoints || isolated)
+          points.push(
+            `<circle cx="${px}" cy="${py}" r="2" class="series-point series-${item.tone ?? "main"}"><title>${html(item.name)}: ${value.toFixed(1)} ${unit} at ${seconds(sample.offsetNs)}</title></circle>`,
+          );
         connected = true;
-        // a lone sample between gaps has no line, so draw its point
-        points.push(
-          `<circle cx="${px}" cy="${py}" r="2" class="series-point series-${item.tone ?? "main"}"><title>${html(item.name)}: ${value.toFixed(1)} ${unit} at ${seconds(sample.offsetNs)}</title></circle>`,
-        );
       });
-      return `<path d="${path}" class="series-line series-${item.tone ?? "main"}${item.dashed ? " series-dashed" : ""}" />${samples.length <= 120 ? points.join("") : ""}`;
+      return `<path d="${path}" class="series-line series-${item.tone ?? "main"}${item.dashed ? " series-dashed" : ""}" />${points.join("")}`;
     })
     .join("");
   const grid = Array.from(

@@ -1054,9 +1054,12 @@ test("production assets, sample and parser worker work under a GitHub Pages subp
 
 const v4 = "tests/fixtures/full-v4.qpulse";
 
-async function openReport(page: import("@playwright/test").Page, path: string) {
+async function openReport(
+  page: import("@playwright/test").Page,
+  file: string | { name: string; mimeType: string; buffer: Buffer },
+) {
   await page.goto("/");
-  await page.locator("#report-file").setInputFiles(path);
+  await page.locator("#report-file").setInputFiles(file);
   await expect(page.getByRole("status")).toHaveText("Report loaded.");
 }
 
@@ -1090,6 +1093,35 @@ test("memory view separates PHP heap from process RSS and keeps unavailable samp
     page.locator('[data-table="memory-samples"] th[aria-sort="descending"]'),
   ).toHaveCount(1);
   await expect(page.getByText("PHP heap versus process memory")).toBeVisible();
+});
+
+test("long memory histories show isolated RSS samples without joining gaps", async ({ page }) => {
+  const raw = JSON.parse(gunzipSync(readFileSync(v4)).toString("utf8"));
+  const main = raw.threads[0];
+  const second = 1_000_000_000;
+  const length = 120 * second;
+  main.ended_ns = main.started_ns + length;
+  main.network.coverage.to_ns = length;
+  main.resources.samples = Array.from({ length: 121 }, (_, i) => [
+    i * second,
+    i === 0 ? 0 : second,
+    null,
+    null,
+    64 * 1_048_576,
+    128 * 1_048_576,
+    i === 30 || i === 60 ? 512 * 1_048_576 : null,
+    i === 30 || i === 60 ? 600 * 1_048_576 : null,
+  ]);
+  await openReport(page, {
+    name: "sparse-rss.qpulse",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(raw)),
+  });
+  await page.locator('.nav-item[data-view="Memory"]').click();
+  await expect(page.locator("#memory-rss-chart .series-point")).toHaveCount(4);
+  for (const path of await page.locator("#memory-rss-chart .series-line").all())
+    await expect(path).toHaveAttribute("d", /^M[^LM]+ M[^LM]+$/);
+  await expect(page.locator("#memory-heap-chart .series-point")).toHaveCount(0);
 });
 
 test("plugins view ranks by total, avoids double counting and explains absent attribution", async ({
@@ -1140,8 +1172,25 @@ test("async view compares threads, flags bottlenecks and distinguishes idle work
 test("network view shows transports separately, unknown counters and honest caveats", async ({
   page,
 }) => {
-  await openReport(page, v4);
+  const raw = JSON.parse(gunzipSync(readFileSync(v4)).toString("utf8"));
+  raw.threads[0].network.events.push([
+    200_000_000,
+    null,
+    1,
+    193,
+    "packet.size",
+    65_537,
+    65_536,
+    "drop_packet",
+    "in_game",
+  ]);
+  await openReport(page, {
+    name: "packet-size.qpulse",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(raw)),
+  });
   await page.locator('.nav-item[data-view="Network"]').click();
+  await expect(page.locator("#network-events tbody")).toContainText("Packet size limit");
   const bedwire = page.locator('[data-transport="bedwire"]');
   const raklib = page.locator('[data-transport="raklib"]');
   await expect(bedwire).toContainText("Packets rejected");
