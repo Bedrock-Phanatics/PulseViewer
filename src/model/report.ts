@@ -114,12 +114,7 @@ export const NETWORK_REASONS = [
   "transport.header",
   "packet.size",
 ] as const;
-export const NETWORK_ACTIONS = [
-  "drop_packet",
-  "drop_batch",
-  "reject_batch",
-  "disconnect",
-] as const;
+export const NETWORK_ACTIONS = ["drop_packet", "drop_batch", "reject_batch", "disconnect"] as const;
 
 export interface NetworkSession {
   id: number;

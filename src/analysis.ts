@@ -25,9 +25,7 @@ export function resourceActivity(resources: {
       sample.intervalNs >= 1_000_000_000n &&
       sample.cpuUserNs !== null &&
       sample.cpuSystemNs !== null
-        ? (Number(sample.cpuUserNs + sample.cpuSystemNs) /
-            Number(sample.intervalNs)) *
-          100
+        ? (Number(sample.cpuUserNs + sample.cpuSystemNs) / Number(sample.intervalNs)) * 100
         : null;
     if (cpu !== null) {
       cpuNs += (sample.cpuUserNs ?? 0n) + (sample.cpuSystemNs ?? 0n);
@@ -42,9 +40,7 @@ export function resourceActivity(resources: {
       lastRss = sample;
     }
     // Deltas are against the previous retained sample.
-    const memoryDelta = previous
-      ? sample.memoryBytes - previous.memoryBytes
-      : null;
+    const memoryDelta = previous ? sample.memoryBytes - previous.memoryBytes : null;
     const rssDelta =
       previous?.rssBytes != null && sample.rssBytes !== null
         ? sample.rssBytes - previous.rssBytes
@@ -57,21 +53,15 @@ export function resourceActivity(resources: {
   return {
     samples,
     current: last,
-    cpuAverage:
-      intervalNs > 0n ? (Number(cpuNs) / Number(intervalNs)) * 100 : null,
+    cpuAverage: intervalNs > 0n ? (Number(cpuNs) / Number(intervalNs)) * 100 : null,
     cpuPeak,
     memoryPeak,
     /** first to last retained sample */
-    memoryGrowth:
-      first && last && first !== last
-        ? last.memoryBytes - first.memoryBytes
-        : null,
+    memoryGrowth: first && last && first !== last ? last.memoryBytes - first.memoryBytes : null,
     /** VmHWM, peak since process launch */
     rssProcessPeak,
-    rssCurrent:
-      samples.findLast((sample) => sample.rssBytes !== null)?.rssBytes ?? null,
-    rssAvailableSamples: samples.filter((sample) => sample.rssBytes !== null)
-      .length,
+    rssCurrent: samples.findLast((sample) => sample.rssBytes !== null)?.rssBytes ?? null,
+    rssAvailableSamples: samples.filter((sample) => sample.rssBytes !== null).length,
     rssGrowth:
       firstRss && lastRss && firstRss !== lastRss
         ? (lastRss.rssBytes ?? 0n) - (firstRss.rssBytes ?? 0n)
@@ -128,9 +118,7 @@ export function pluginProfile(thread: PulseThread) {
       selfNs: 0n,
       ownedSelfNs: 0n,
     };
-  const owners = new Map(
-    thread.zoneOwners.map((owner) => [owner.zone, owner.plugin]),
-  );
+  const owners = new Map(thread.zoneOwners.map((owner) => [owner.zone, owner.plugin]));
   const rows = new Map<string, PluginRow>();
   const zoneRows = new Map<string, Map<number, PluginZone>>();
   let selfNs = 0n;
@@ -168,7 +156,7 @@ export function pluginProfile(thread: PulseThread) {
     zone.selfNs += node.selfNs;
     row.selfNs += node.selfNs;
     let nested = false;
-    for (let parent = node.parent; parent > 0;) {
+    for (let parent = node.parent; parent > 0; ) {
       const ancestor = thread.nodes[parent - 1];
       if (!ancestor) break;
       if (owners.get(ancestor.zone) === plugin) {
@@ -184,18 +172,10 @@ export function pluginProfile(thread: PulseThread) {
     if (node.maxNs > row.maxNs) row.maxNs = node.maxNs;
   }
   const plugins = [...rows.values()].sort((a, b) =>
-    a.totalNs > b.totalNs
-      ? -1
-      : a.totalNs < b.totalNs
-        ? 1
-        : a.name < b.name
-          ? -1
-          : 1,
+    a.totalNs > b.totalNs ? -1 : a.totalNs < b.totalNs ? 1 : a.name < b.name ? -1 : 1,
   );
   for (const plugin of plugins)
-    plugin.zones.sort((a, b) =>
-      a.selfNs > b.selfNs ? -1 : a.selfNs < b.selfNs ? 1 : 0,
-    );
+    plugin.zones.sort((a, b) => (a.selfNs > b.selfNs ? -1 : a.selfNs < b.selfNs ? 1 : 0));
   return {
     status: (plugins.length ? "ok" : "no-owners") as PluginStatus,
     plugins,
@@ -248,15 +228,9 @@ export function asyncProfile(report: PulseReport) {
       role,
       hasWork: role === "main" ? item.submitted > 0n : item.ran > 0n,
       busyPercent:
-        role === "worker" && item.ran > 0n && spanNs > 0n
-          ? percent(item.runTotalNs, spanNs)
-          : null,
-      avgTurnaroundNs:
-        item.completed > 0n
-          ? item.turnaroundTotalNs / item.completed
-          : undefined,
-      avgPickupNs:
-        item.completed > 0n ? item.pickupTotalNs / item.completed : undefined,
+        role === "worker" && item.ran > 0n && spanNs > 0n ? percent(item.runTotalNs, spanNs) : null,
+      avgTurnaroundNs: item.completed > 0n ? item.turnaroundTotalNs / item.completed : undefined,
+      avgPickupNs: item.completed > 0n ? item.pickupTotalNs / item.completed : undefined,
       avgWaitNs: item.ran > 0n ? item.waitTotalNs / item.ran : undefined,
       avgRunNs: item.ran > 0n ? item.runTotalNs / item.ran : undefined,
       outstanding: item.submitted - item.completed,
@@ -300,17 +274,10 @@ export function asyncProfile(report: PulseReport) {
       });
   }
   if (workers.length >= 2) {
-    const sorted = [...workers].sort((a, b) =>
-      a.async.ran > b.async.ran ? -1 : 1,
-    );
+    const sorted = [...workers].sort((a, b) => (a.async.ran > b.async.ran ? -1 : 1));
     const top = sorted[0];
     const bottom = sorted.at(-1);
-    if (
-      top &&
-      bottom &&
-      top.async.ran >= 10n &&
-      top.async.ran >= bottom.async.ran * 3n
-    )
+    if (top && bottom && top.async.ran >= 10n && top.async.ran >= bottom.async.ran * 3n)
       findings.push({
         level: "info",
         title: "Uneven worker load",
@@ -334,22 +301,14 @@ export function asyncProfile(report: PulseReport) {
         0n,
       ),
       workers: rows.filter((row) => row.role === "worker").length,
-      idleWorkers: rows.filter((row) => row.role === "worker" && !row.hasWork)
-        .length,
+      idleWorkers: rows.filter((row) => row.role === "worker" && !row.hasWork).length,
       avgTurnaroundNs:
-        completed > 0n
-          ? sum(mains, (a) => a.turnaroundTotalNs) / completed
-          : undefined,
-      avgPickupNs:
-        completed > 0n
-          ? sum(mains, (a) => a.pickupTotalNs) / completed
-          : undefined,
-      avgWaitNs:
-        ran > 0n ? sum(workers, (a) => a.waitTotalNs) / ran : undefined,
+        completed > 0n ? sum(mains, (a) => a.turnaroundTotalNs) / completed : undefined,
+      avgPickupNs: completed > 0n ? sum(mains, (a) => a.pickupTotalNs) / completed : undefined,
+      avgWaitNs: ran > 0n ? sum(workers, (a) => a.waitTotalNs) / ran : undefined,
       avgRunNs: ran > 0n ? sum(workers, (a) => a.runTotalNs) / ran : undefined,
       busiest: workers.reduce<AsyncRow | undefined>(
-        (best, row) =>
-          (row.busyPercent ?? 0) > (best?.busyPercent ?? -1) ? row : best,
+        (best, row) => ((row.busyPercent ?? 0) > (best?.busyPercent ?? -1) ? row : best),
         undefined,
       ),
     },
@@ -413,8 +372,7 @@ export const KNOWN_COUNTERS: Record<string, TransportInfo> = {
     label: "Event stalls",
     group: "pressure",
     kind: "count",
-    detail:
-      "Event stalls counted by the native transport, a sign of queue pressure.",
+    detail: "Event stalls counted by the native transport, a sign of queue pressure.",
   },
   overload_disconnects: {
     label: "Overload disconnects",
@@ -426,22 +384,19 @@ export const KNOWN_COUNTERS: Record<string, TransportInfo> = {
     label: "Peak active sessions",
     group: "peak",
     kind: "count",
-    detail:
-      "Highest number of simultaneous transport sessions observed. A peak, not a delta.",
+    detail: "Highest number of simultaneous transport sessions observed. A peak, not a delta.",
   },
   command_queue_peak_bytes: {
     label: "Peak send-queue size",
     group: "peak",
     kind: "bytes",
-    detail:
-      "Largest backlog of outgoing commands, in bytes. A peak, not a delta.",
+    detail: "Largest backlog of outgoing commands, in bytes. A peak, not a delta.",
   },
   event_queue_peak_bytes: {
     label: "Peak event-queue size",
     group: "peak",
     kind: "bytes",
-    detail:
-      "Largest backlog of incoming events, in bytes. A peak, not a delta.",
+    detail: "Largest backlog of incoming events, in bytes. A peak, not a delta.",
   },
 };
 
@@ -472,16 +427,12 @@ export function orderedCounters(transport: NetworkTransport) {
     .sort((a, b) => {
       const left = order.indexOf(a.name);
       const right = order.indexOf(b.name);
-      if (left >= 0 || right >= 0)
-        return (left < 0 ? 1e9 : left) - (right < 0 ? 1e9 : right);
+      if (left >= 0 || right >= 0) return (left < 0 ? 1e9 : left) - (right < 0 ? 1e9 : right);
       return a.name < b.name ? -1 : 1;
     });
 }
 
-export function networkActivity(
-  network: PulseNetwork,
-  session: number | null | "all" = "all",
-) {
+export function networkActivity(network: PulseNetwork, session: number | null | "all" = "all") {
   const buckets = new Map<
     bigint,
     {
@@ -504,8 +455,7 @@ export function networkActivity(
   };
   for (const window of network.windows) {
     if (session !== "all" && window.sessionId !== session) continue;
-    for (const key of Object.keys(totals) as (keyof typeof totals)[])
-      totals[key] += window[key];
+    for (const key of Object.keys(totals) as (keyof typeof totals)[]) totals[key] += window[key];
     let bucket = buckets.get(window.offsetNs);
     if (!bucket) {
       bucket = {
@@ -523,9 +473,7 @@ export function networkActivity(
   return {
     totals,
     buckets: [...buckets.values()],
-    events: network.events.filter(
-      (event) => session === "all" || event.sessionId === session,
-    ),
+    events: network.events.filter((event) => session === "all" || event.sessionId === session),
   };
 }
 
@@ -543,11 +491,7 @@ const milliseconds = new Intl.NumberFormat("en", {
   minimumFractionDigits: 2,
 });
 
-export function compare(
-  a: Hotspot | PulseNode,
-  b: Hotspot | PulseNode,
-  key: SortKey,
-): number {
+export function compare(a: Hotspot | PulseNode, b: Hotspot | PulseNode, key: SortKey): number {
   if (key === "average") {
     const left = a.totalNs * (b.calls || 1n);
     const right = b.totalNs * (a.calls || 1n);
@@ -557,10 +501,7 @@ export function compare(
 }
 
 export function analyze(thread: PulseThread) {
-  const children: PulseNode[][] = Array.from(
-    { length: thread.nodes.length + 1 },
-    () => [],
-  );
+  const children: PulseNode[][] = Array.from({ length: thread.nodes.length + 1 }, () => []);
   const zones = new Map<string, Hotspot>();
   let selfNs = 0n;
   let rootNs = 0n;
@@ -582,8 +523,7 @@ export function analyze(thread: PulseThread) {
   const durations = thread.ticks
     .map((tick) => tick.durationNs)
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const percentile = (fraction: number) =>
-    durations[Math.ceil(durations.length * fraction) - 1];
+  const percentile = (fraction: number) => durations[Math.ceil(durations.length * fraction) - 1];
   const hotspots = [...zones.values()].sort((a, b) => compare(a, b, "selfNs"));
   const spikes = new Map(thread.spikes.map((spike) => [spike.tick.id, spike]));
   return {
@@ -612,17 +552,14 @@ export function treeRows(
     for (let i = thread.nodes.length - 1; i >= 0; i--) {
       const node = thread.nodes[i];
       if (!node) continue;
-      if ((thread.zones[node.zone] ?? "").toLowerCase().includes(query))
-        visible[node.id] = 1;
+      if ((thread.zones[node.zone] ?? "").toLowerCase().includes(query)) visible[node.id] = 1;
       if (visible[node.id]) visible[node.parent] = 1;
     }
   }
   const result: { node: PulseNode; depth: number }[] = [];
   const stack: { node: PulseNode; depth: number }[] = [];
   const push = (parent: number, depth: number) => {
-    const siblings = (analysis.children[parent] ?? []).filter(
-      (node) => !query || visible[node.id],
-    );
+    const siblings = (analysis.children[parent] ?? []).filter((node) => !query || visible[node.id]);
     siblings.sort((a, b) => compare(a, b, key) * direction);
     for (let i = siblings.length - 1; i >= 0; i--) {
       const node = siblings[i];
